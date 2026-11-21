@@ -1,0 +1,46 @@
+# Every push to main ships to the phone:
+# - native code changed (new fingerprint) -> build a new APK
+# - only JavaScript changed -> publish an over-the-air update to the installed APK
+name: Ship Android
+
+on:
+  push:
+    branches: ['main']
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!docs/**'
+
+jobs:
+  fingerprint:
+    name: Fingerprint
+    type: fingerprint
+    environment: preview
+
+  get_android_build:
+    name: Find matching APK
+    needs: [fingerprint]
+    type: get-build
+    params:
+      platform: android
+      profile: preview
+      fingerprint_hash: ${{ needs.fingerprint.outputs.android_fingerprint_hash }}
+
+  build_android:
+    name: Build APK
+    needs: [get_android_build]
+    if: ${{ !needs.get_android_build.outputs.build_id }}
+    type: build
+    params:
+      platform: android
+      profile: preview
+
+  publish_android_update:
+    name: Publish update
+    needs: [get_android_build]
+    if: ${{ needs.get_android_build.outputs.build_id }}
+    type: update
+    environment: preview
+    params:
+      channel: preview
+      platform: android
