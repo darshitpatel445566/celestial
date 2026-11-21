@@ -6,10 +6,6 @@ name: Ship Android
 on:
   push:
     branches: ['main']
-    paths:
-      - '**'
-      - '!**/*.md'
-      - '!docs/**'
 
 jobs:
   fingerprint:
