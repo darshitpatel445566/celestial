@@ -11,7 +11,7 @@ export const DEFAULT_TAGS: Tag[] = [
 
 export const DEFAULT_MISSION: Mission = { type: 'none', level: 3, rounds: 3, sentences: [] };
 export const DEFAULT_SNOOZE: Snooze = { minutes: 10, times: 3 };
-export const DEFAULT_SOUND: SoundPrefs = { main: 'raw:beacon', pre: 'raw:chime', rising: true, vibrate: true };
+export const DEFAULT_SOUND: SoundPrefs = { main: 'raw:classic', pre: 'raw:chime', rising: true, vibrate: true };
 export const DEFAULT_GAP = 15;
 
 export function uid(prefix = ''): string {

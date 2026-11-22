@@ -1,14 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  FlatList,
-  Pressable,
-  StyleSheet,
-  TextInput,
-  View,
-  type LayoutChangeEvent,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
-} from 'react-native';
+import { useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { daysInMonth, pad, today as todayYmd } from '../lib/dates';
 import { TAG_COLORS } from '../lib/defaults';
@@ -16,13 +7,23 @@ import { MONTHS_LONG } from '../lib/format';
 import { tick } from '../lib/haptics';
 import { useStore } from '../lib/store';
 import type { Energy, Tag } from '../lib/types';
-import { Button, Chip, ChipWrap, Sheet, styles as ui } from '../ui/controls';
+import { Button, Chip, Sheet, styles as ui } from '../ui/controls';
 import { ENERGY_ICONS, Icon } from '../ui/Icon';
 import { T } from '../ui/Text';
-import { color, font } from '../ui/theme';
+import { ALARM_ACCENT, color, font, SIDE, type Accent } from '../ui/theme';
 
-/** Inline month calendar. Monday first, past days greyed out. */
-export function Calendar({ value, onChange, min }: { value: string; onChange: (day: string) => void; min?: string }) {
+/** Month calendar (shown in a popup). Monday first; days before `min` are greyed out. */
+export function Calendar({
+  value,
+  onChange,
+  min,
+  accent = ALARM_ACCENT,
+}: {
+  value: string;
+  onChange: (day: string) => void;
+  min?: string;
+  accent?: Accent;
+}) {
   const [month, setMonth] = useState(() => value.slice(0, 7));
   const [shown, setShown] = useState(value);
   if (shown !== value) {
@@ -79,8 +80,13 @@ export function Calendar({ value, onChange, min }: { value: string; onChange: (d
                 }}
                 accessibilityLabel={day}
                 style={s.calCell}>
-                <View style={[s.calDay, selected && s.calDayOn, day === today && !selected && s.calToday]}>
-                  <T v={selected ? 'subMedium' : 'sub'} c={past ? color.ink3 : color.ink}>
+                <View
+                  style={[
+                    s.calDay,
+                    selected && { backgroundColor: accent.main },
+                    day === today && !selected && { borderWidth: 1.5, borderColor: accent.main },
+                  ]}>
+                  <T v={selected ? 'subMedium' : 'sub'} c={past ? color.ink3 : selected ? accent.on : color.ink}>
                     {Number(day.slice(8))}
                   </T>
                 </View>
@@ -93,101 +99,16 @@ export function Calendar({ value, onChange, min }: { value: string; onChange: (d
   );
 }
 
-const ITEM = 48;
-
-/** Horizontal number wheel: scroll or tap; the centred number is chosen. */
-export function NumberWheel({
-  values,
+/** Four battery icons, no words. Tap again to clear. */
+export function EnergyPicker({
   value,
   onChange,
-  format,
+  accent = ALARM_ACCENT,
 }: {
-  values: number[];
-  value: number;
-  onChange: (v: number) => void;
-  format?: (v: number) => string;
+  value: Energy;
+  onChange: (e: Energy) => void;
+  accent?: Accent;
 }) {
-  const [width, setWidth] = useState(0);
-  const list = useRef<FlatList<number>>(null);
-  const index = Math.max(0, values.indexOf(value));
-  const [live, setLive] = useState(index);
-  const [seen, setSeen] = useState(index);
-  if (seen !== index) {
-    setSeen(index);
-    setLive(index);
-  }
-  const onLayout = (e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width);
-  useEffect(() => {
-    if (width) list.current?.scrollToOffset({ offset: index * ITEM, animated: false });
-    // only after the first measurement
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [width]);
-  const settle = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const i = Math.min(values.length - 1, Math.max(0, Math.round(e.nativeEvent.contentOffset.x / ITEM)));
-    if (values[i] !== value) onChange(values[i]);
-  };
-  const step = (d: number) => {
-    const i = Math.min(values.length - 1, Math.max(0, index + d));
-    tick();
-    onChange(values[i]);
-    list.current?.scrollToOffset({ offset: i * ITEM, animated: true });
-  };
-  const padSide = Math.max(0, (width - ITEM) / 2);
-  return (
-    <View style={s.wheel}>
-      <Pressable onPress={() => step(-1)} hitSlop={8} accessibilityLabel="Less" style={s.wheelArrow}>
-        <Icon name="chevron-left" size={24} c={color.ink3} />
-      </Pressable>
-      <View style={s.wheelWindow} onLayout={onLayout}>
-        {width ? <View pointerEvents="none" style={[s.wheelPill, { left: padSide }]} /> : null}
-        {width ? (
-          <FlatList
-            ref={list}
-            horizontal
-            data={values}
-            keyExtractor={(v) => String(v)}
-            showsHorizontalScrollIndicator={false}
-            snapToInterval={ITEM}
-            decelerationRate="fast"
-            contentContainerStyle={{ paddingHorizontal: padSide }}
-            getItemLayout={(_, i) => ({ length: ITEM, offset: ITEM * i, index: i })}
-            onScroll={(e) => {
-              const i = Math.round(e.nativeEvent.contentOffset.x / ITEM);
-              if (i !== live) {
-                setLive(i);
-                tick();
-              }
-            }}
-            scrollEventThrottle={32}
-            onMomentumScrollEnd={settle}
-            onScrollEndDrag={(e) => {
-              if (!e.nativeEvent.velocity || Math.abs(e.nativeEvent.velocity.x) < 0.05) settle(e);
-            }}
-            renderItem={({ item, index: i }) => (
-              <Pressable
-                style={s.wheelItem}
-                onPress={() => {
-                  tick();
-                  onChange(item);
-                  list.current?.scrollToOffset({ offset: i * ITEM, animated: true });
-                }}>
-                <T v={i === live ? 'headline' : 'callout'} c={i === live ? color.ink : color.ink3} tabular>
-                  {format ? format(item) : item}
-                </T>
-              </Pressable>
-            )}
-          />
-        ) : null}
-      </View>
-      <Pressable onPress={() => step(1)} hitSlop={8} accessibilityLabel="More" style={s.wheelArrow}>
-        <Icon name="chevron-right" size={24} c={color.ink3} />
-      </Pressable>
-    </View>
-  );
-}
-
-/** Four battery icons, no words. Tap again to clear. */
-export function EnergyPicker({ value, onChange }: { value: Energy; onChange: (e: Energy) => void }) {
   const labels = ['Empty', 'Low', 'Medium', 'High'];
   return (
     <View style={s.energy}>
@@ -203,8 +124,8 @@ export function EnergyPicker({ value, onChange }: { value: Energy; onChange: (e:
             accessibilityRole="button"
             accessibilityLabel={`Energy ${labels[i]}`}
             accessibilityState={{ selected: on }}
-            style={[s.energyBtn, on && s.energyOn]}>
-            <Icon name={name} size={26} c={color.ink} style={s.batteryIcon} />
+            style={[s.energyBtn, on && { backgroundColor: accent.main }]}>
+            <Icon name={name} size={26} c={on ? accent.on : color.ink} style={s.batteryIcon} />
           </Pressable>
         );
       })}
@@ -212,8 +133,16 @@ export function EnergyPicker({ value, onChange }: { value: Energy; onChange: (e:
   );
 }
 
-/** Tag chips, always visible. One per item; long-press to edit; + Add makes a new one. */
-export function TagPicker({ value, onChange }: { value: string | null; onChange: (id: string | null) => void }) {
+/** One row of tag chips that scrolls sideways. One tag per item; long-press to edit; + makes a new one. */
+export function TagPicker({
+  value,
+  onChange,
+  accent = ALARM_ACCENT,
+}: {
+  value: string | null;
+  onChange: (id: string | null) => void;
+  accent?: Accent;
+}) {
   const tags = useStore((st) => st.tags);
   const addTag = useStore((st) => st.addTag);
   const updateTag = useStore((st) => st.updateTag);
@@ -246,19 +175,24 @@ export function TagPicker({ value, onChange }: { value: string | null; onChange:
 
   return (
     <>
-      <ChipWrap>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={s.tagRow}>
         {tags.map((t) => (
           <Chip
             key={t.id}
             label={t.name}
             dot={t.color}
+            accent={accent}
             selected={value === t.id}
             onPress={() => onChange(value === t.id ? null : t.id)}
             onLongPress={() => openEdit(t)}
           />
         ))}
-        <Chip label="Add" icon="plus" onPress={openNew} />
-      </ChipWrap>
+        <Chip icon="plus" onPress={openNew} style={s.addTag} />
+      </ScrollView>
       <Sheet
         visible={editing !== null}
         onClose={() => setEditing(null)}
@@ -309,22 +243,6 @@ const s = StyleSheet.create({
   calCell: { flex: 1, height: 42, alignItems: 'center', justifyContent: 'center' },
   calCellText: { flex: 1, textAlign: 'center', paddingVertical: 4 },
   calDay: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  calDayOn: { backgroundColor: color.yellow },
-  calToday: { borderWidth: 1.5, borderColor: color.yellow },
-  wheel: { flexDirection: 'row', alignItems: 'center', height: 52 },
-  wheelArrow: { width: 32, alignItems: 'center' },
-  wheelWindow: { flex: 1, height: 44, justifyContent: 'center' },
-  wheelPill: {
-    position: 'absolute',
-    top: 2,
-    width: ITEM,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: color.yellowSoft,
-    borderWidth: 1.5,
-    borderColor: color.yellow,
-  },
-  wheelItem: { width: ITEM, height: 44, alignItems: 'center', justifyContent: 'center' },
   energy: { flexDirection: 'row', gap: 10 },
   energyBtn: {
     width: 52,
@@ -334,8 +252,9 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: color.fill,
   },
-  energyOn: { backgroundColor: color.yellow },
   batteryIcon: { transform: [{ rotate: '90deg' }] },
+  tagRow: { paddingHorizontal: SIDE, gap: 8, alignItems: 'center' },
+  addTag: { width: 44, justifyContent: 'center', paddingHorizontal: 0 },
   tagInput: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: color.line,

@@ -26,6 +26,19 @@ class AlarmReceiver : BroadcastReceiver() {
         val service = RingService.instance
         if (service != null) service.dismissPre() else Ringer.stopWithoutService(ctx)
       }
+      C.ACTION_TASK -> {
+        val alarmId = intent.getStringExtra(C.EXTRA_ALARM) ?: return
+        val taskId = intent.getStringExtra(C.EXTRA_TASK) ?: return
+        Actions.toggleTask(ctx, alarmId, taskId, intent.getStringExtra(C.EXTRA_OCCURRENCE) ?: "")
+      }
+      C.ACTION_DONE -> {
+        val alarmId = intent.getStringExtra(C.EXTRA_ALARM) ?: return
+        Actions.markDone(ctx, alarmId, intent.getStringExtra(C.EXTRA_OCCURRENCE) ?: "")
+      }
+      C.ACTION_REMIND_SNOOZE -> {
+        val alarmId = intent.getStringExtra(C.EXTRA_ALARM) ?: return
+        Actions.snoozeReminder(ctx, alarmId)
+      }
     }
   }
 }

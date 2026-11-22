@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, type ReactNode, type Ref } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -6,6 +6,7 @@ import {
   Pressable,
   StyleSheet,
   View,
+  type HostInstance,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
@@ -15,7 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { tick } from '../lib/haptics';
 import { Icon, type IconName } from './Icon';
 import { T } from './Text';
-import { color, font, SIDE } from './theme';
+import { ALARM_ACCENT, color, font, SIDE, type Accent } from './theme';
 
 export function Divider({ inset = SIDE }: { inset?: number }) {
   return <View style={[styles.divider, { marginLeft: inset }]} />;
@@ -32,6 +33,8 @@ export function Row({
   last,
   icon,
   nested,
+  popup,
+  rowRef,
 }: {
   label: string;
   value?: string;
@@ -43,9 +46,13 @@ export function Row({
   icon?: IconName;
   /** Row inside another row's panel: no side padding */
   nested?: boolean;
+  /** Opens a popup list instead of expanding (shows ⌃⌄ like iPhone) */
+  popup?: boolean;
+  /** For placing a popup next to the row */
+  rowRef?: Ref<HostInstance>;
 }) {
   return (
-    <View>
+    <View ref={rowRef} collapsable={false}>
       <Pressable
         onPress={onPress}
         style={({ pressed }) => [styles.row, nested && styles.flat, pressed && styles.pressed]}
@@ -62,7 +69,11 @@ export function Row({
               {value}
             </T>
           ) : null}
-          <Icon name={open ? 'chevron-down' : 'chevron-right'} size={22} c={color.ink3} />
+          <Icon
+            name={popup ? 'unfold-more-horizontal' : open ? 'chevron-down' : 'chevron-right'}
+            size={popup ? 20 : 22}
+            c={color.ink3}
+          />
         </View>
       </Pressable>
       {open ? <View style={[styles.panel, nested && styles.flat]}>{children}</View> : null}
@@ -80,8 +91,9 @@ export function Chip({
   icon,
   style,
   small,
+  accent = ALARM_ACCENT,
 }: {
-  label: string;
+  label?: string;
   selected?: boolean;
   onPress?: () => void;
   onLongPress?: () => void;
@@ -89,7 +101,9 @@ export function Chip({
   icon?: IconName;
   style?: StyleProp<ViewStyle>;
   small?: boolean;
+  accent?: Accent;
 }) {
+  const ink = selected ? accent.on : color.ink;
   return (
     <Pressable
       onPress={() => {
@@ -103,15 +117,17 @@ export function Chip({
       style={({ pressed }) => [
         styles.chip,
         small && styles.chipSmall,
-        selected ? styles.chipOn : styles.chipOff,
+        selected ? { backgroundColor: accent.main } : styles.chipOff,
         pressed && styles.pressed,
         style,
       ]}>
-      {dot ? <View style={[styles.dot, { backgroundColor: dot }]} /> : null}
-      {icon ? <Icon name={icon} size={16} c={color.ink} style={styles.chipIcon} /> : null}
-      <T v={selected ? 'subMedium' : 'sub'} c={color.ink}>
-        {label}
-      </T>
+      {dot ? <View style={[styles.dot, { backgroundColor: dot }, selected && styles.dotOn]} /> : null}
+      {icon ? <Icon name={icon} size={label ? 16 : 20} c={ink} style={label ? styles.chipIcon : null} /> : null}
+      {label ? (
+        <T v={selected ? 'subMedium' : 'sub'} c={ink}>
+          {label}
+        </T>
+      ) : null}
     </Pressable>
   );
 }
@@ -121,13 +137,24 @@ export function ChipWrap({ children, style }: { children: ReactNode; style?: Sty
 }
 
 /** iOS-style switch in Celestial yellow. */
-export function Switch({ value, onChange, label }: { value: boolean; onChange: (v: boolean) => void; label?: string }) {
+export function Switch({
+  value,
+  onChange,
+  label,
+  accent = color.yellow,
+}: {
+  value: boolean;
+  onChange: (v: boolean) => void;
+  label?: string;
+  accent?: string;
+}) {
   const x = useSharedValue(value ? 1 : 0);
   useEffect(() => {
     x.set(withTiming(value ? 1 : 0, { duration: 180 }));
   }, [value, x]);
   const knob = useAnimatedStyle(() => ({ transform: [{ translateX: x.get() * 20 }] }));
-  const track = useAnimatedStyle(() => ({ opacity: 0.25 + x.get() * 0.75 }));
+  // Off is plain grey; the colour fades in only when on.
+  const track = useAnimatedStyle(() => ({ opacity: x.get() }));
   return (
     <Pressable
       onPress={() => {
@@ -140,7 +167,7 @@ export function Switch({ value, onChange, label }: { value: boolean; onChange: (
       accessibilityLabel={label}
       style={styles.switch}>
       <View style={[StyleSheet.absoluteFill, styles.switchOff]} />
-      <Animated.View style={[StyleSheet.absoluteFill, styles.switchOn, track]} />
+      <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: accent }, track]} />
       <Animated.View style={[styles.knob, knob]} />
     </Pressable>
   );
@@ -151,11 +178,13 @@ export function Checkbox({
   onPress,
   size = 22,
   round,
+  accent = ALARM_ACCENT,
 }: {
   checked: boolean;
   onPress?: () => void;
   size?: number;
   round?: boolean;
+  accent?: Accent;
 }) {
   return (
     <Pressable
@@ -166,9 +195,9 @@ export function Checkbox({
       style={[
         styles.check,
         { width: size, height: size, borderRadius: round ? size / 2 : 6 },
-        checked ? styles.checkOn : styles.checkOff,
+        checked ? { backgroundColor: accent.main } : styles.checkOff,
       ]}>
-      {checked ? <Icon name="check" size={size - 6} c={color.ink} /> : null}
+      {checked ? <Icon name="check" size={size - 6} c={accent.on} /> : null}
     </Pressable>
   );
 }
@@ -272,6 +301,8 @@ export const styles = StyleSheet.create({
   chipIcon: { marginRight: 6 },
   chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   dot: { width: 8, height: 8, borderRadius: 4, marginRight: 7 },
+  // keeps a blue tag's dot visible on a blue (reminder) chip
+  dotOn: { width: 10, height: 10, borderRadius: 5, borderWidth: 1.5, borderColor: color.white, marginRight: 6 },
   switch: { width: 51, height: 31, borderRadius: 16, overflow: 'hidden', justifyContent: 'center' },
   switchOff: { backgroundColor: color.fillStrong },
   switchOn: { backgroundColor: color.yellow },

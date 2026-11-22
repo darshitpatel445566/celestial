@@ -7,15 +7,18 @@ import { customSummary, fmtLeft, fmtRange, fmtTime, partOfDay, repeatLabel } fro
 import { isOccurrence, nextOccurrence, occurrencesBetween } from '../src/lib/repeat';
 import {
   buildTriggers,
+  effectiveDay,
   itemTriggers,
   listEntries,
   nextRing,
   overdueOccurrence,
   preOffsets,
   rollForwardIfPast,
+  tasksOf,
   untilDay,
 } from '../src/lib/schedule';
-import type { Item } from '../src/lib/types';
+import { taskEntries } from '../src/lib/tasks';
+import type { Item, Line } from '../src/lib/types';
 
 let passed = 0;
 function test(name: string, fn: () => void) {
@@ -232,7 +235,7 @@ test('styles: alarm rings, reminder notifies, ring-like-alarm reminder rings', (
   const t = buildTriggers([item({ ...base })], NOW)[2];
   assert.equal(t.wall, '2026-11-22 09:00');
   assert.equal(t.snoozeLimit, 3);
-  assert.equal(t.sound, 'raw:beacon');
+  assert.equal(t.sound, 'raw:classic');
   const pre = buildTriggers([item({ ...base })], NOW)[0];
   assert.equal(pre.sound, 'raw:chime');
   assert.match(pre.body, /Alarm at 9:00 AM · in 30 min/);
@@ -276,6 +279,59 @@ test('until day helper', () => {
   const it = item({ until: { kind: 'after', n: 1, unit: 'month' } });
   assert.equal(untilDay(it, '2026-01-31'), '2026-02-28');
   assert.equal(atTime('2026-11-21', 1440 + 30).getDate(), 22);
+});
+
+test('any time can be picked: a time already passed today rings tomorrow', () => {
+  // 4:29 PM now
+  assert.equal(effectiveDay(item({ date: '2026-11-21', time: 9 * 60 }), NOW), '2026-11-22');
+  assert.equal(effectiveDay(item({ date: '2026-11-21', time: 18 * 60 }), NOW), '2026-11-21');
+  // A date chosen in the calendar stays, whatever the time
+  assert.equal(effectiveDay(item({ date: '2026-11-25', time: 9 * 60 }), NOW), '2026-11-25');
+  // An old one-time date counts from today
+  assert.equal(effectiveDay(item({ date: '2026-11-02', time: 18 * 60 }), NOW), '2026-11-21');
+  // Repeating: the next matching day after now
+  assert.equal(effectiveDay(item({ date: '2026-11-16', time: 9 * 60, repeat: 'weekdays' }), NOW), '2026-11-23');
+});
+
+const task = (id: string, text: string, done = false, level: 0 | 1 = 0): Line => ({
+  id,
+  text,
+  type: 'task',
+  level,
+  done,
+});
+
+test('repeating items start each occurrence with fresh ticks', () => {
+  const it = item({ repeat: 'daily', tasksFor: '2026-11-20', lines: [task('x', 'Pack', true)] });
+  assert.equal(tasksOf(it, '2026-11-20')[0].done, true);
+  assert.equal(tasksOf(it, '2026-11-21')[0].done, false);
+  const once = item({ lines: [task('x', 'Pack', true)] });
+  assert.equal(tasksOf(once, '2026-11-25')[0].done, true);
+});
+
+test('tasks page groups by day and puts ticked tasks last', () => {
+  const late = item({
+    id: 'r1',
+    kind: 'reminder',
+    date: '2026-11-20',
+    time: 600,
+    lines: [task('a', 'Pay rent'), task('b', 'Send receipt', false, 1)],
+  });
+  const today = item({ id: 'a1', date: '2026-11-21', time: 20 * 60, lines: [task('c', 'Water plants', true)] });
+  const tomorrow = item({ id: 'a2', date: '2026-11-22', time: 7 * 60, lines: [task('d', 'Gym bag')] });
+  const doneReminder = item({
+    id: 'r2',
+    kind: 'reminder',
+    date: '2026-11-19',
+    time: 600,
+    done: ['2026-11-19'],
+    lines: [task('e', 'Old thing')],
+  });
+  const entries = taskEntries([tomorrow, today, late, doneReminder], NOW);
+  assert.deepEqual(
+    entries.map((e) => `${e.group}:${e.line.text}`),
+    ['overdue:Pay rent', 'overdue:Send receipt', 'tomorrow:Gym bag', 'done:Water plants'],
+  );
 });
 
 console.log(`schedule tests: ${passed} passed`);

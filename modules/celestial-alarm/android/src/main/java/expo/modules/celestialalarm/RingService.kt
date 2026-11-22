@@ -18,7 +18,6 @@ import android.os.PowerManager
 import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
-import android.os.VibratorManager
 
 /**
  * Plays the alarm: sound on the alarm stream (rings even on silent), rising volume, vibration,
@@ -54,7 +53,7 @@ class RingService : Service() {
       val p = player ?: return
       if (missionMode) return
       if (volume < maxVolume) {
-        volume = minOf(maxVolume, volume + 0.03f)
+        volume = minOf(maxVolume, volume + 0.075f)
         try {
           p.setVolume(volume, volume)
         } catch (e: Exception) {
@@ -110,7 +109,8 @@ class RingService : Service() {
     acquireWakeLock()
     val pre = t.style == "pre"
     maxVolume = if (pre) 0.55f else 1f
-    volume = if (t.rising || pre) 0.06f else maxVolume
+    // Rising volume starts at a quarter and reaches full in about 10 seconds.
+    volume = if (pre) 0.15f else if (t.rising) 0.25f else maxVolume
     requestFocus()
     ensureAudible()
     startSound(Sounds.resolve(this, t.sound))
@@ -243,17 +243,8 @@ class RingService : Service() {
   }
 
   private fun startVibration(pre: Boolean) {
-    val v: Vibrator? = try {
-      if (Build.VERSION.SDK_INT >= 31) {
-        val manager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-        manager.defaultVibrator
-      } else {
-        getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-      }
-    } catch (e: Exception) {
-      null
-    }
-    if (v == null || !v.hasVibrator()) return
+    val v: Vibrator = Haptic.vibrator(this) ?: return
+    if (!v.hasVibrator()) return
     val pattern = if (pre) longArrayOf(0, 180, 220, 180, 2400) else longArrayOf(0, 700, 500, 700, 1100)
     try {
       if (Build.VERSION.SDK_INT >= 33) {

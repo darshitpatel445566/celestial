@@ -15,7 +15,7 @@ class CelestialAlarmModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("CelestialAlarm")
 
-    Events("onRing", "onRingEnd", "onReminder")
+    Events("onRing", "onRingEnd", "onReminder", "onPending")
 
     OnCreate {
       RingEvents.listener = { name, body -> sendEvent(name, body) }
@@ -109,6 +109,28 @@ class CelestialAlarmModule : Module() {
 
     Function("clearMissed") {
       Store.writeList(context, Store.MISSED, emptyList())
+      true
+    }
+
+    // Ticks / "Mark done" from notifications since the last call, as JSON {toggles, done}.
+    Function("takePendingActions") {
+      Actions.takePending(context)
+    }
+
+    // Tasks ticked in the app: redraw the reminder notification if it is on screen.
+    Function("updateShownTasks") { alarmId: String, tasksJson: String ->
+      Actions.updateShownTasks(context, alarmId, tasksJson)
+      true
+    }
+
+    Function("dismissReminder") { alarmId: String ->
+      Actions.dismiss(context, alarmId)
+      true
+    }
+
+    // Strong, reliable buzz for missions: "success", "wrong" or "tick".
+    Function("haptic") { kind: String ->
+      Haptic.play(context, kind)
       true
     }
 

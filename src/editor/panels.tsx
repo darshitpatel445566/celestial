@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import type { SoundOption } from '../../modules/celestial-alarm';
-import { addDays } from '../lib/dates';
+import { addDays, weekday } from '../lib/dates';
 import { LEVEL_NAMES } from '../lib/defaults';
 import { BUNDLED_SOUNDS, loadSounds, previewSound, stopPreview } from '../lib/engine';
 import {
@@ -14,10 +14,10 @@ import {
   untilLabel,
   WEEKDAY_LETTERS,
 } from '../lib/format';
-import { MATHS_EXAMPLES, tilesConfig, TYPING_EXAMPLES } from '../lib/missions';
-import { fromDays, untilDay } from '../lib/schedule';
 import { tick } from '../lib/haptics';
+import { MATHS_EXAMPLES, tilesConfig, TILES_LOOK_MS, TYPING_EXAMPLES } from '../lib/missions';
 import type {
+  CustomRepeat,
   Freq,
   Item,
   Mission,
@@ -30,10 +30,18 @@ import type {
   WindowUntil,
 } from '../lib/types';
 import { Button, Chip, ChipWrap, Divider, Row, Switch, styles as ui } from '../ui/controls';
-import { Icon, MISSION_ICONS } from '../ui/Icon';
+import { MISSION_ICONS } from '../ui/Icon';
+import { PopupMenu, Popover, useAnchor, type MenuOption } from '../ui/popups';
 import { T } from '../ui/Text';
-import { color, font } from '../ui/theme';
-import { Calendar, NumberWheel } from './pickers';
+import { ALARM_ACCENT, color, font, type Accent } from '../ui/theme';
+import { Wheel, WheelGroup, WheelLabel } from '../ui/Wheel';
+import { Calendar } from './pickers';
+
+const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+
+type PatchFn = (patch: Partial<Item>) => void;
+
+// ---------- Repeat ----------
 
 const PRESETS: RepeatPreset[] = [
   'once',
@@ -46,319 +54,439 @@ const PRESETS: RepeatPreset[] = [
   '3months',
   '6months',
   'yearly',
-  'custom',
 ];
 
-const ONE_TO = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+const FREQ_UNIT: Record<Freq, [string, string]> = {
+  daily: ['day', 'days'],
+  weekly: ['week', 'weeks'],
+  monthly: ['month', 'months'],
+  yearly: ['year', 'years'],
+};
 
-export function RepeatPanel({ item, onChange }: { item: Item; onChange: (patch: Partial<Item>) => void }) {
-  const c = item.custom;
-  const setCustom = (patch: Partial<Item['custom']>) => onChange({ custom: { ...c, ...patch } });
-  const unit: Record<Freq, [string, string]> = {
-    daily: ['day', 'days'],
-    weekly: ['week', 'weeks'],
-    monthly: ['month', 'months'],
-    yearly: ['year', 'years'],
+/** Repeat: a popup list from Once to Yearly, then Custom (its own small card). */
+export function RepeatRow({ item, onChange, accent = ALARM_ACCENT }: { item: Item; onChange: PatchFn; accent?: Accent }) {
+  const a = useAnchor<'menu' | 'custom'>();
+  const options: MenuOption<RepeatPreset>[] = [
+    ...PRESETS.map((p) => ({ key: p, label: REPEAT_LABELS[p] })),
+    { key: 'custom', label: 'Custom', dividerBefore: true },
+  ];
+  const pick = (p: RepeatPreset) => {
+    onChange({
+      repeat: p,
+      // "On date" end only makes sense for one-time items
+      until: p !== 'once' && item.until.kind === 'date' ? { kind: 'event' } : item.until,
+    });
+    if (p === 'custom') setTimeout(() => a.show('custom', 'menu'), 140);
   };
   return (
-    <View style={s.gap12}>
-      <ChipWrap>
-        {PRESETS.map((p) => (
-          <Chip
-            key={p}
-            label={REPEAT_LABELS[p]}
-            selected={item.repeat === p}
-            onPress={() =>
-              onChange({
-                repeat: p,
-                // "On date" end only makes sense for one-time items
-                until: p !== 'once' && item.until.kind === 'date' ? { kind: 'event' } : item.until,
-              })
-            }
-          />
-        ))}
-      </ChipWrap>
-      {item.repeat === 'custom' ? (
-        <View style={s.custom}>
-          <T v="footMedium" c={color.ink2}>
-            Frequency
-          </T>
-          <ChipWrap>
-            {(['daily', 'weekly', 'monthly', 'yearly'] as Freq[]).map((f) => (
-              <Chip
-                key={f}
-                small
-                label={f[0].toUpperCase() + f.slice(1)}
-                selected={c.freq === f}
-                onPress={() => setCustom({ freq: f })}
-              />
-            ))}
-          </ChipWrap>
-          <T v="footMedium" c={color.ink2}>
-            Every
-          </T>
-          <NumberWheel
-            values={ONE_TO(30)}
-            value={c.every}
-            onChange={(v) => setCustom({ every: v })}
-            format={(v) => String(v)}
-          />
-          <T v="foot" c={color.ink2} style={s.center}>
-            {c.every === 1 ? unit[c.freq][0] : unit[c.freq][1]}
-          </T>
-          {c.freq === 'weekly' ? (
-            <>
-              <T v="footMedium" c={color.ink2}>
-                On
-              </T>
-              <View style={s.letters}>
-                {[1, 2, 3, 4, 5, 6, 0].map((wd) => {
-                  const on = c.weekdays.includes(wd);
-                  return (
-                    <Pressable
-                      key={wd}
-                      onPress={() => {
-                        tick();
-                        setCustom({ weekdays: on ? c.weekdays.filter((x) => x !== wd) : [...c.weekdays, wd] });
-                      }}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: on }}
-                      style={[s.letter, on && s.letterOn]}>
-                      <T v={on ? 'subMedium' : 'sub'}>{WEEKDAY_LETTERS[wd]}</T>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </>
-          ) : null}
-          {c.freq === 'monthly' ? (
-            <>
-              <T v="footMedium" c={color.ink2}>
-                Each
-              </T>
-              <View style={s.dates}>
-                {ONE_TO(31).map((d) => {
-                  const on = c.monthDays.includes(d);
-                  return (
-                    <Pressable
-                      key={d}
-                      onPress={() => {
-                        tick();
-                        setCustom({ monthDays: on ? c.monthDays.filter((x) => x !== d) : [...c.monthDays, d] });
-                      }}
-                      style={s.dateCell}>
-                      <View style={[s.dateDot, on && s.letterOn]}>
-                        <T v="foot">{d}</T>
-                      </View>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </>
-          ) : null}
-          {c.freq === 'yearly' ? (
-            <>
-              <T v="footMedium" c={color.ink2}>
-                In
-              </T>
-              <ChipWrap>
-                {MONTHS_SHORT.map((mName, mi) => {
-                  const on = c.months.includes(mi);
-                  return (
-                    <Chip
-                      key={mName}
-                      small
-                      label={mName}
-                      selected={on}
-                      onPress={() => setCustom({ months: on ? c.months.filter((x) => x !== mi) : [...c.months, mi] })}
-                    />
-                  );
-                })}
-              </ChipWrap>
-            </>
-          ) : null}
-          <T v="sub" c={color.ink} style={s.summary}>
-            {customSummary(c, item.date, item.kind === 'alarm' ? 'Rings' : 'Reminds')}
-          </T>
-        </View>
-      ) : null}
-    </View>
+    <>
+      <Row
+        label="Repeat"
+        value={repeatValue(item)}
+        popup
+        rowRef={a.ref('menu')}
+        onPress={() => {
+          tick();
+          a.show('menu');
+        }}
+      />
+      <PopupMenu
+        anchor={a.rectFor('menu')}
+        options={options}
+        selected={item.repeat}
+        onSelect={pick}
+        onClose={a.close}
+        width={230}
+      />
+      <Popover
+        anchor={a.rectFor('custom')}
+        onClose={a.close}
+        title="Custom"
+        onDone={a.close}
+        estimate={360}>
+        <CustomRepeatCard item={item} onChange={onChange} accent={accent} onDone={a.close} />
+      </Popover>
+    </>
   );
 }
 
-export function EndRepeatPanel({ item, onChange }: { item: Item; onChange: (patch: Partial<Item>) => void }) {
-  return (
-    <View style={s.gap12}>
-      <ChipWrap>
-        <Chip label="Never" selected={!item.endRepeat} onPress={() => onChange({ endRepeat: null })} />
-        <Chip
-          label="On date"
-          selected={!!item.endRepeat}
-          onPress={() => onChange({ endRepeat: item.endRepeat ?? addDays(item.date, 30) })}
-        />
-      </ChipWrap>
-      {item.endRepeat ? (
-        <Calendar value={item.endRepeat} min={item.date} onChange={(d) => onChange({ endRepeat: d })} />
-      ) : null}
-    </View>
-  );
+function repeatValue(item: Item): string {
+  if (item.repeat !== 'custom') return REPEAT_LABELS[item.repeat];
+  return customSummary(item.custom, item.date, '').trim().replace(/^every/, 'Every');
 }
 
-type Quick<T> = { label: string; value: T };
-
-const FROM_QUICK: Quick<WindowFrom>[] = [
-  { label: 'None', value: { kind: 'none' } },
-  { label: '1 day', value: { kind: 'before', n: 1, unit: 'day' } },
-  { label: '2 days', value: { kind: 'before', n: 2, unit: 'day' } },
-  { label: '1 week', value: { kind: 'before', n: 1, unit: 'week' } },
-  { label: '1 month', value: { kind: 'before', n: 1, unit: 'month' } },
-];
-
-const UNTIL_QUICK: Quick<WindowUntil>[] = [
-  { label: 'The event day', value: { kind: 'event' } },
-  { label: '1 day after', value: { kind: 'after', n: 1, unit: 'day' } },
-  { label: '2 days after', value: { kind: 'after', n: 2, unit: 'day' } },
-  { label: '1 week after', value: { kind: 'after', n: 1, unit: 'week' } },
-];
-
-const same = (a: object, b: object) => JSON.stringify(a) === JSON.stringify(b);
-
-function CustomAmount({ n, unit, onChange }: { n: number; unit: Unit; onChange: (n: number, unit: Unit) => void }) {
+function CustomRepeatCard({
+  item,
+  onChange,
+  accent,
+  onDone,
+}: {
+  item: Item;
+  onChange: PatchFn;
+  accent: Accent;
+  onDone: () => void;
+}) {
+  const c = item.custom;
+  const set = (patch: Partial<CustomRepeat>) => onChange({ custom: { ...c, ...patch } });
+  const freqMenu = useAnchor<'freq'>();
+  const freqs: MenuOption<Freq>[] = [
+    { key: 'daily', label: 'Daily' },
+    { key: 'weekly', label: 'Weekly' },
+    { key: 'monthly', label: 'Monthly' },
+    { key: 'yearly', label: 'Yearly' },
+  ];
+  // With nothing picked the series follows the start date, so show that as chosen.
+  const weekdays = c.weekdays.length ? c.weekdays : [weekday(item.date)];
+  const monthDays = c.monthDays.length ? c.monthDays : [Number(item.date.slice(8))];
+  const months = c.months.length ? c.months : [Number(item.date.slice(5, 7)) - 1];
+  const flip = (list: number[], v: number) => {
+    const next = list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
+    return next.length ? next : list; // keep at least one
+  };
+  const every = Math.max(1, c.every || 1);
   return (
-    <View style={s.gap8}>
-      <NumberWheel values={ONE_TO(60)} value={n} onChange={(v) => onChange(v, unit)} />
-      <ChipWrap style={s.centerRow}>
-        {(['day', 'week', 'month'] as Unit[]).map((u) => (
-          <Chip key={u} small label={`${u}s`} selected={unit === u} onPress={() => onChange(n, u)} />
-        ))}
-      </ChipWrap>
-    </View>
-  );
-}
-
-/** "Remind every day": once a day at the alarm's time, from N before until M after the event. */
-export function WindowPanel({ item, onChange }: { item: Item; onChange: (patch: Partial<Item>) => void }) {
-  const [open, setOpen] = useState<'from' | 'until' | null>(null);
-  const toggle = (k: 'from' | 'until') => setOpen((o) => (o === k ? null : k));
-  const fromCustom = item.from.kind === 'before' && !FROM_QUICK.some((q) => same(q.value, item.from));
-  const untilCustom = item.until.kind === 'after' && !UNTIL_QUICK.some((q) => same(q.value, item.until));
-  const occ = item.date;
-  const start = addDays(occ, -fromDays(item, occ));
-  const end = untilDay(item, occ);
-  return (
-    <View>
-      <Row nested label="From" value={fromLabel(item.from)} open={open === 'from'} onPress={() => toggle('from')}>
-        <View style={s.gap12}>
-          <ChipWrap>
-            {FROM_QUICK.map((q) => (
-              <Chip
-                key={q.label}
-                label={q.label}
-                selected={same(q.value, item.from)}
-                onPress={() => onChange({ from: q.value })}
-              />
-            ))}
-            <Chip
-              label="Custom"
-              selected={fromCustom}
-              onPress={() => onChange({ from: { kind: 'before', n: 10, unit: 'day' } })}
-            />
-          </ChipWrap>
-          {item.from.kind === 'before' && fromCustom ? (
-            <CustomAmount
-              n={item.from.n}
-              unit={item.from.unit}
-              onChange={(n, unit) => onChange({ from: { kind: 'before', n, unit } })}
-            />
-          ) : null}
-        </View>
-      </Row>
+    <View style={s.gap10}>
       <Row
         nested
-        label="Until"
-        value={untilLabel(item.until)}
-        open={open === 'until'}
-        onPress={() => toggle('until')}
-        last>
-        <View style={s.gap12}>
-          <ChipWrap>
-            {UNTIL_QUICK.map((q) => (
-              <Chip
-                key={q.label}
-                label={q.label}
-                selected={same(q.value, item.until)}
-                onPress={() => onChange({ until: q.value })}
-              />
-            ))}
-            <Chip
-              label="Custom"
-              selected={untilCustom}
-              onPress={() => onChange({ until: { kind: 'after', n: 10, unit: 'day' } })}
-            />
-            {item.repeat === 'once' ? (
-              <Chip
-                label="On date"
-                selected={item.until.kind === 'date'}
-                onPress={() => onChange({ until: { kind: 'date', date: addDays(item.date, 7) } })}
-              />
-            ) : null}
-          </ChipWrap>
-          {item.until.kind === 'after' && untilCustom ? (
-            <CustomAmount
-              n={item.until.n}
-              unit={item.until.unit}
-              onChange={(n, unit) => onChange({ until: { kind: 'after', n, unit } })}
-            />
-          ) : null}
-          {item.until.kind === 'date' ? (
-            <Calendar
-              value={item.until.date}
-              min={item.date}
-              onChange={(d) => onChange({ until: { kind: 'date', date: d } })}
-            />
-          ) : null}
+        label="Frequency"
+        value={freqs.find((f) => f.key === c.freq)?.label}
+        popup
+        rowRef={freqMenu.ref('freq')}
+        onPress={() => {
+          tick();
+          freqMenu.show('freq');
+        }}
+      />
+      <PopupMenu
+        anchor={freqMenu.rectFor('freq')}
+        options={freqs}
+        selected={c.freq}
+        onSelect={(f) => set({ freq: f })}
+        onClose={freqMenu.close}
+        width={200}
+      />
+      <View style={s.everyRow}>
+        <T v="body" style={s.everyLabel}>
+          Every
+        </T>
+        <WheelGroup rows={3} rowHeight={38} style={s.flex}>
+          <Wheel
+            values={range(1, 30)}
+            value={every}
+            onChange={(v) => set({ every: v })}
+            onConfirm={onDone}
+            rows={3}
+            rowHeight={38}
+            fontSize={19}
+            width={64}
+            align="right"
+            label="Every"
+          />
+          <WheelLabel text={every === 1 ? FREQ_UNIT[c.freq][0] : FREQ_UNIT[c.freq][1]} rows={3} rowHeight={38} width={92} />
+        </WheelGroup>
+      </View>
+      {c.freq === 'weekly' ? (
+        <View style={s.letters}>
+          {[1, 2, 3, 4, 5, 6, 0].map((wd) => {
+            const on = weekdays.includes(wd);
+            return (
+              <Pressable
+                key={wd}
+                onPress={() => {
+                  tick();
+                  set({ weekdays: flip(weekdays, wd) });
+                }}
+                accessibilityRole="button"
+                accessibilityState={{ selected: on }}
+                style={[s.letter, on && { backgroundColor: accent.main }]}>
+                <T v={on ? 'subMedium' : 'sub'} c={on ? accent.on : color.ink}>
+                  {WEEKDAY_LETTERS[wd]}
+                </T>
+              </Pressable>
+            );
+          })}
         </View>
-      </Row>
-      <DayStrip start={start} event={occ} end={end} />
+      ) : null}
+      {c.freq === 'monthly' ? (
+        <View style={s.dates}>
+          {range(1, 31).map((d) => {
+            const on = monthDays.includes(d);
+            return (
+              <Pressable
+                key={d}
+                onPress={() => {
+                  tick();
+                  set({ monthDays: flip(monthDays, d) });
+                }}
+                accessibilityState={{ selected: on }}
+                style={s.dateCell}>
+                <View style={[s.dateDot, on && { backgroundColor: accent.main }]}>
+                  <T v="foot" c={on ? accent.on : color.ink}>
+                    {d}
+                  </T>
+                </View>
+              </Pressable>
+            );
+          })}
+        </View>
+      ) : null}
+      {c.freq === 'yearly' ? (
+        <ChipWrap>
+          {MONTHS_SHORT.map((mName, mi) => (
+            <Chip
+              key={mName}
+              small
+              accent={accent}
+              label={mName}
+              selected={months.includes(mi)}
+              onPress={() => set({ months: flip(months, mi) })}
+            />
+          ))}
+        </ChipWrap>
+      ) : null}
+      <T v="foot" c={color.ink2}>
+        {customSummary(c, item.date, item.kind === 'alarm' ? 'Rings' : 'Reminds')}
+      </T>
     </View>
   );
 }
 
-/** ● ● ● ◆ ● ● — one dot per reminder day, the diamond on the event day. */
-function DayStrip({ start, event, end }: { start: string; event: string; end: string }) {
-  const days: string[] = [];
-  for (let d = start; d <= end && days.length < 400; d = addDays(d, 1)) days.push(d);
-  if (days.length <= 1) return null;
-  const compact = days.length > 21;
-  const shown = compact ? [days[0], event, days[days.length - 1]] : days;
+// ---------- End repeat ----------
+
+export function EndRepeatRow({
+  item,
+  onChange,
+  accent = ALARM_ACCENT,
+}: {
+  item: Item;
+  onChange: PatchFn;
+  accent?: Accent;
+}) {
+  const a = useAnchor<'menu' | 'date'>();
   return (
-    <View style={s.strip}>
-      <View style={s.stripDots}>
-        {shown.map((d, i) => (
-          <View key={d} style={s.stripCell}>
-            {compact && i > 0 ? (
-              <T v="cap" c={color.ink3} style={s.ellipsis}>
-                ···
-              </T>
-            ) : null}
-            {d === event ? <View style={s.stripDiamond} /> : <View style={s.stripDot} />}
-          </View>
-        ))}
-      </View>
-      <View style={s.stripLabels}>
-        <T v="cap" c={color.ink2}>
-          {fmtDate(days[0])}
-        </T>
-        <T v="cap" c={color.ink}>
-          {fmtDate(event)}
-        </T>
-        <T v="cap" c={color.ink2}>
-          {fmtDate(days[days.length - 1])}
-        </T>
-      </View>
+    <>
+      <Row
+        label="End repeat"
+        value={item.endRepeat ? fmtDate(item.endRepeat) : 'Never'}
+        popup
+        rowRef={a.ref('menu')}
+        onPress={() => {
+          tick();
+          a.show('menu');
+        }}
+      />
+      <PopupMenu
+        anchor={a.rectFor('menu')}
+        options={[
+          { key: 'never', label: 'Never' },
+          { key: 'date', label: 'On date' },
+        ]}
+        selected={item.endRepeat ? 'date' : 'never'}
+        onSelect={(k) => {
+          if (k === 'never') onChange({ endRepeat: null });
+          else {
+            if (!item.endRepeat) onChange({ endRepeat: addDays(item.date, 30) });
+            setTimeout(() => a.show('date', 'menu'), 140);
+          }
+        }}
+        onClose={a.close}
+        width={200}
+      />
+      <Popover anchor={a.rectFor('date')} onClose={a.close} estimate={360}>
+        <Calendar
+          value={item.endRepeat ?? addDays(item.date, 30)}
+          min={item.date}
+          accent={accent}
+          onChange={(d) => {
+            onChange({ endRepeat: d });
+            setTimeout(a.close, 160);
+          }}
+        />
+      </Popover>
+    </>
+  );
+}
+
+// ---------- Remind every day ----------
+
+type FromKey = 'none' | 'b1d' | 'b2d' | 'b1w' | 'b1m' | 'custom';
+type UntilKey = 'event' | 'a1d' | 'a2d' | 'a1w' | 'custom' | 'date';
+
+const FROM_QUICK: { key: FromKey; value: WindowFrom }[] = [
+  { key: 'none', value: { kind: 'none' } },
+  { key: 'b1d', value: { kind: 'before', n: 1, unit: 'day' } },
+  { key: 'b2d', value: { kind: 'before', n: 2, unit: 'day' } },
+  { key: 'b1w', value: { kind: 'before', n: 1, unit: 'week' } },
+  { key: 'b1m', value: { kind: 'before', n: 1, unit: 'month' } },
+];
+
+const UNTIL_QUICK: { key: UntilKey; value: WindowUntil }[] = [
+  { key: 'event', value: { kind: 'event' } },
+  { key: 'a1d', value: { kind: 'after', n: 1, unit: 'day' } },
+  { key: 'a2d', value: { kind: 'after', n: 2, unit: 'day' } },
+  { key: 'a1w', value: { kind: 'after', n: 1, unit: 'week' } },
+];
+
+const same = (x: object, y: object) => JSON.stringify(x) === JSON.stringify(y);
+
+function fromKey(f: WindowFrom): FromKey {
+  return FROM_QUICK.find((q) => same(q.value, f))?.key ?? 'custom';
+}
+
+function untilKey(u: WindowUntil): UntilKey {
+  if (u.kind === 'date') return 'date';
+  return UNTIL_QUICK.find((q) => same(q.value, u))?.key ?? 'custom';
+}
+
+const UNITS: Unit[] = ['day', 'week', 'month'];
+
+/** Two wheels side by side: how many, and days / weeks / months. */
+function AmountWheels({
+  n,
+  unit,
+  onChange,
+  onDone,
+  after,
+}: {
+  n: number;
+  unit: Unit;
+  onChange: (n: number, unit: Unit) => void;
+  onDone: () => void;
+  after: string;
+}) {
+  return (
+    <View style={s.gap10}>
+      <WheelGroup>
+        <Wheel
+          values={range(1, 60)}
+          value={n}
+          onChange={(v) => onChange(v, unit)}
+          onConfirm={onDone}
+          width={72}
+          align="right"
+          label="How many"
+        />
+        <Wheel
+          values={UNITS}
+          value={unit}
+          onChange={(u) => onChange(n, u)}
+          onConfirm={onDone}
+          format={(u) => (n === 1 ? u : `${u}s`)}
+          width={120}
+          align="left"
+          label="Unit"
+        />
+      </WheelGroup>
+      <T v="foot" c={color.ink2} style={s.centerText}>
+        {after}
+      </T>
     </View>
   );
 }
+
+/** "Remind every day": once a day at the same time, from some days before until some days after. */
+export function WindowPanel({ item, onChange, accent = ALARM_ACCENT }: { item: Item; onChange: PatchFn; accent?: Accent }) {
+  const a = useAnchor<'from' | 'until' | 'fromCustom' | 'untilCustom' | 'untilDate'>();
+  const fromOptions: MenuOption<FromKey>[] = [
+    ...FROM_QUICK.map((q) => ({ key: q.key, label: fromLabel(q.value) })),
+    { key: 'custom', label: 'Custom', dividerBefore: true },
+  ];
+  const untilOptions: MenuOption<UntilKey>[] = [
+    ...UNTIL_QUICK.map((q) => ({ key: q.key, label: untilLabel(q.value) })),
+    { key: 'custom', label: 'Custom', dividerBefore: true },
+    ...(item.repeat === 'once' ? [{ key: 'date' as UntilKey, label: 'On date' }] : []),
+  ];
+  const dayWord = item.kind === 'alarm' ? 'the alarm day' : 'the day it’s due';
+  const from = item.from.kind === 'before' ? item.from : { kind: 'before' as const, n: 3, unit: 'day' as Unit };
+  const until = item.until.kind === 'after' ? item.until : { kind: 'after' as const, n: 3, unit: 'day' as Unit };
+  return (
+    <View>
+      <Row
+        nested
+        label="From"
+        value={fromLabel(item.from)}
+        popup
+        rowRef={a.ref('from')}
+        onPress={() => {
+          tick();
+          a.show('from');
+        }}
+      />
+      <Row
+        nested
+        last
+        label="Until"
+        value={untilLabel(item.until)}
+        popup
+        rowRef={a.ref('until')}
+        onPress={() => {
+          tick();
+          a.show('until');
+        }}
+      />
+      <PopupMenu
+        anchor={a.rectFor('from')}
+        options={fromOptions}
+        selected={fromKey(item.from)}
+        onSelect={(k) => {
+          if (k === 'custom') {
+            if (fromKey(item.from) !== 'custom') onChange({ from: { kind: 'before', n: 3, unit: 'day' } });
+            setTimeout(() => a.show('fromCustom', 'from'), 140);
+          } else onChange({ from: FROM_QUICK.find((q) => q.key === k)!.value });
+        }}
+        onClose={a.close}
+        width={220}
+      />
+      <PopupMenu
+        anchor={a.rectFor('until')}
+        options={untilOptions}
+        selected={untilKey(item.until)}
+        onSelect={(k) => {
+          if (k === 'custom') {
+            if (untilKey(item.until) !== 'custom') onChange({ until: { kind: 'after', n: 3, unit: 'day' } });
+            setTimeout(() => a.show('untilCustom', 'until'), 140);
+          } else if (k === 'date') {
+            if (item.until.kind !== 'date') onChange({ until: { kind: 'date', date: addDays(item.date, 7) } });
+            setTimeout(() => a.show('untilDate', 'until'), 140);
+          } else onChange({ until: UNTIL_QUICK.find((q) => q.key === k)!.value });
+        }}
+        onClose={a.close}
+        width={220}
+      />
+      <Popover anchor={a.rectFor('fromCustom')} onClose={a.close} title="From" onDone={a.close} estimate={290}>
+        <AmountWheels
+          n={from.n}
+          unit={from.unit}
+          after={`before ${dayWord}`}
+          onChange={(n, unit) => onChange({ from: { kind: 'before', n, unit } })}
+          onDone={a.close}
+        />
+      </Popover>
+      <Popover anchor={a.rectFor('untilCustom')} onClose={a.close} title="Until" onDone={a.close} estimate={290}>
+        <AmountWheels
+          n={until.n}
+          unit={until.unit}
+          after={`after ${dayWord}`}
+          onChange={(n, unit) => onChange({ until: { kind: 'after', n, unit } })}
+          onDone={a.close}
+        />
+      </Popover>
+      <Popover anchor={a.rectFor('untilDate')} onClose={a.close} estimate={360}>
+        <Calendar
+          value={item.until.kind === 'date' ? item.until.date : addDays(item.date, 7)}
+          min={item.date}
+          accent={accent}
+          onChange={(d) => {
+            onChange({ until: { kind: 'date', date: d } });
+            setTimeout(a.close, 160);
+          }}
+        />
+      </Popover>
+    </View>
+  );
+}
+
+// ---------- Mission ----------
 
 export function missionLabel(m: Mission): string {
   if (m.type === 'none') return 'None';
@@ -366,7 +494,7 @@ export function missionLabel(m: Mission): string {
   return `${name}, ${LEVEL_NAMES[m.level - 1]}, ${m.rounds} ${m.rounds === 1 ? 'round' : 'rounds'}`;
 }
 
-function MissionExample({ m }: { m: Mission }) {
+function MissionExample({ m, accent }: { m: Mission; accent: Accent }) {
   if (m.type === 'maths')
     return (
       <View style={s.example}>
@@ -384,13 +512,16 @@ function MissionExample({ m }: { m: Mission }) {
           {Array.from({ length: size }, (_, r) => (
             <View key={r} style={s.miniRow}>
               {Array.from({ length: size }, (_, c) => (
-                <View key={c} style={[s.miniTile, litSet.has(r * size + c) && s.miniTileOn]} />
+                <View
+                  key={c}
+                  style={[s.miniTile, litSet.has(r * size + c) && { backgroundColor: accent.main }]}
+                />
               ))}
             </View>
           ))}
         </View>
         <T v="foot" c="rgba(255,255,255,0.7)">
-          {size}×{size} grid · remember {lit} tiles · 3 seconds to look
+          {size}×{size} grid · remember {lit} tiles · {(TILES_LOOK_MS / 1000).toString()} seconds to look
         </T>
       </View>
     );
@@ -410,11 +541,14 @@ export function MissionPanel({
   mission,
   onChange,
   onTry,
+  accent = ALARM_ACCENT,
 }: {
   mission: Mission;
   onChange: (m: Mission) => void;
   onTry: () => void;
+  accent?: Accent;
 }) {
+  const [roundsOpen, setRoundsOpen] = useState(false);
   const set = (patch: Partial<Mission>) => onChange({ ...mission, ...patch });
   const types: { t: MissionType; label: string }[] = [
     { t: 'none', label: 'None' },
@@ -432,6 +566,7 @@ export function MissionPanel({
           <Chip
             key={t}
             label={label}
+            accent={accent}
             icon={t === 'none' ? undefined : MISSION_ICONS[t]}
             selected={mission.type === t}
             onPress={() => set({ type: t })}
@@ -454,27 +589,38 @@ export function MissionPanel({
                   }}
                   hitSlop={6}
                   accessibilityLabel={`Level ${l}, ${LEVEL_NAMES[l - 1]}`}
-                  style={[s.levelDot, l <= mission.level && s.levelDotOn]}
+                  style={[s.levelDot, l <= mission.level && { backgroundColor: accent.main }]}
                 />
               ))}
             </View>
             <T v="sub">{LEVEL_NAMES[mission.level - 1]}</T>
           </View>
-          <MissionExample m={mission} />
-          <T v="footMedium" c={color.ink2}>
-            Rounds
-          </T>
-          <ChipWrap>
-            {[1, 2, 3, 4, 5].map((r) => (
-              <Chip
-                key={r}
-                small
-                label={String(r)}
-                selected={mission.rounds === r}
-                onPress={() => set({ rounds: r })}
-              />
-            ))}
-          </ChipWrap>
+          <MissionExample m={mission} accent={accent} />
+          <View>
+            <Row
+              nested
+              last={!roundsOpen}
+              label="Rounds"
+              value={String(mission.rounds)}
+              open={roundsOpen}
+              onPress={() => {
+                tick();
+                setRoundsOpen((o) => !o);
+              }}>
+              <WheelGroup>
+                <Wheel
+                  values={range(1, 30)}
+                  value={Math.min(30, Math.max(1, mission.rounds))}
+                  onChange={(v) => set({ rounds: v })}
+                  onConfirm={() => setRoundsOpen(false)}
+                  width={72}
+                  align="right"
+                  label="Rounds"
+                />
+                <WheelLabel text={mission.rounds === 1 ? 'round' : 'rounds'} width={100} />
+              </WheelGroup>
+            </Row>
+          </View>
           {mission.type === 'typing' ? (
             <>
               <T v="footMedium" c={color.ink2}>
@@ -497,42 +643,51 @@ export function MissionPanel({
   );
 }
 
+// ---------- Snooze ----------
+
+const SNOOZE_MINUTES = [...range(1, 30), 45, 60];
+const SNOOZE_TIMES = range(0, 10);
+
 export function snoozeLabel(sn: Snooze): string {
   return sn.times === 0 ? 'Off' : `${sn.minutes} min, ${sn.times} ${sn.times === 1 ? 'time' : 'times'}`;
 }
 
-export function SnoozePanel({ snooze, onChange }: { snooze: Snooze; onChange: (s: Snooze) => void }) {
+/** One wheel pair: how long, and how many times. Tap the centre to close. */
+export function SnoozePanel({
+  snooze,
+  onChange,
+  onClose,
+}: {
+  snooze: Snooze;
+  onChange: (s: Snooze) => void;
+  onClose: () => void;
+}) {
+  const minutes = SNOOZE_MINUTES.includes(snooze.minutes) ? snooze.minutes : 10;
   return (
-    <View style={s.gap12}>
-      <T v="footMedium" c={color.ink2}>
-        Length
-      </T>
-      <ChipWrap>
-        {[5, 10, 15, 20, 30].map((m) => (
-          <Chip
-            key={m}
-            small
-            label={`${m} min`}
-            selected={snooze.times > 0 && snooze.minutes === m}
-            onPress={() => onChange({ minutes: m, times: snooze.times || 3 })}
-          />
-        ))}
-      </ChipWrap>
-      <T v="footMedium" c={color.ink2}>
-        Times
-      </T>
-      <ChipWrap>
-        {[1, 2, 3, 4, 5].map((n) => (
-          <Chip
-            key={n}
-            small
-            label={String(n)}
-            selected={snooze.times === n}
-            onPress={() => onChange({ ...snooze, times: n })}
-          />
-        ))}
-        <Chip small label="Off" selected={snooze.times === 0} onPress={() => onChange({ ...snooze, times: 0 })} />
-      </ChipWrap>
+    <View style={s.gap10}>
+      <WheelGroup>
+        <Wheel
+          values={SNOOZE_MINUTES}
+          value={minutes}
+          onChange={(v) => onChange({ ...snooze, minutes: v })}
+          onConfirm={onClose}
+          width={64}
+          align="right"
+          label="Snooze length"
+        />
+        <WheelLabel text="min" width={70} />
+        <Wheel
+          values={SNOOZE_TIMES}
+          value={Math.min(10, snooze.times)}
+          onChange={(v) => onChange({ ...snooze, times: v })}
+          onConfirm={onClose}
+          format={(v) => (v === 0 ? 'Off' : String(v))}
+          width={64}
+          align="right"
+          label="Snooze times"
+        />
+        <WheelLabel text={snooze.times === 0 ? '' : snooze.times === 1 ? 'time' : 'times'} width={70} />
+      </WheelGroup>
       <T v="foot" c={color.ink2}>
         If nobody answers, the alarm rings for 10 minutes, then snoozes by itself. After the last snooze only the
         mission stops it.
@@ -541,56 +696,36 @@ export function SnoozePanel({ snooze, onChange }: { snooze: Snooze; onChange: (s
   );
 }
 
-function SoundList({ value, onPick, sounds }: { value: string; onPick: (id: string) => void; sounds: SoundOption[] }) {
-  const [more, setMore] = useState(false);
-  const bundled = sounds.filter((x) => x.group === 'celestial');
-  const phone = sounds.filter((x) => x.group === 'phone');
-  const pickedPhone = phone.find((x) => x.id === value);
-  return (
-    <View style={s.gap8}>
-      <ChipWrap>
-        {bundled.map((x) => (
-          <Chip
-            key={x.id}
-            label={x.title}
-            icon="music-note-outline"
-            selected={value === x.id}
-            onPress={() => {
-              onPick(x.id);
-              previewSound(x.id);
-            }}
-          />
-        ))}
-      </ChipWrap>
-      {phone.length ? (
-        <Pressable onPress={() => setMore((m) => !m)} style={s.moreRow} accessibilityRole="button">
-          <T v="sub" c={color.ink2}>
-            Phone sounds{pickedPhone ? ` · ${pickedPhone.title}` : ''}
-          </T>
-          <Icon name={more ? 'chevron-down' : 'chevron-right'} size={20} c={color.ink3} />
-        </Pressable>
-      ) : null}
-      {more
-        ? phone.map((x) => (
-            <Pressable
-              key={x.id}
-              onPress={() => {
-                tick();
-                onPick(x.id);
-                previewSound(x.id);
-              }}
-              style={s.soundRow}>
-              <T v="sub">{x.title}</T>
-              {value === x.id ? <Icon name="check" size={20} c={color.ink} /> : null}
-            </Pressable>
-          ))
-        : null}
-    </View>
-  );
+// ---------- Sound ----------
+
+function soundOptions(sounds: SoundOption[]): MenuOption<string>[] {
+  const groups: { group: SoundOption['group']; title: string }[] = [
+    { group: 'loud', title: 'Loud' },
+    { group: 'gentle', title: 'Gentle' },
+    { group: 'phone', title: 'Phone sounds' },
+  ];
+  const out: MenuOption<string>[] = [];
+  for (const g of groups) {
+    sounds
+      .filter((x) => x.group === g.group)
+      .forEach((x, i) => out.push({ key: x.id, label: x.title, section: i === 0 ? g.title : undefined }));
+  }
+  return out;
 }
 
-export function SoundPanel({ sound, onChange }: { sound: SoundPrefs; onChange: (s: SoundPrefs) => void }) {
+export function SoundPanel({
+  sound,
+  onChange,
+  title,
+  accent = ALARM_ACCENT,
+}: {
+  sound: SoundPrefs;
+  onChange: (s: SoundPrefs) => void;
+  title: (id: string) => string;
+  accent?: Accent;
+}) {
   const [sounds, setSounds] = useState<SoundOption[]>(BUNDLED_SOUNDS);
+  const a = useAnchor<'main' | 'pre'>();
   useEffect(() => {
     let alive = true;
     loadSounds().then((list) => alive && setSounds(list));
@@ -599,25 +734,78 @@ export function SoundPanel({ sound, onChange }: { sound: SoundPrefs; onChange: (
       stopPreview();
     };
   }, []);
+  const options = soundOptions(sounds);
+  const close = () => {
+    stopPreview();
+    a.close();
+  };
   return (
-    <View style={s.gap12}>
-      <T v="footMedium" c={color.ink2}>
-        Alarm sound
-      </T>
-      <SoundList value={sound.main} sounds={sounds} onPick={(id) => onChange({ ...sound, main: id })} />
-      <T v="footMedium" c={color.ink2}>
-        Pre-alarm sound
-      </T>
-      <SoundList value={sound.pre} sounds={sounds} onPick={(id) => onChange({ ...sound, pre: id })} />
-      <Divider inset={0} />
+    <View>
+      <Row
+        nested
+        label="Alarm sound"
+        value={title(sound.main)}
+        popup
+        rowRef={a.ref('main')}
+        onPress={() => {
+          tick();
+          a.show('main');
+        }}
+      />
+      <Row
+        nested
+        label="Pre-alarm sound"
+        value={title(sound.pre)}
+        popup
+        rowRef={a.ref('pre')}
+        onPress={() => {
+          tick();
+          a.show('pre');
+        }}
+      />
       <View style={s.switchRow}>
         <T v="body">Rising volume</T>
-        <Switch value={sound.rising} onChange={(v) => onChange({ ...sound, rising: v })} label="Rising volume" />
+        <Switch
+          value={sound.rising}
+          onChange={(v) => onChange({ ...sound, rising: v })}
+          label="Rising volume"
+          accent={accent.main}
+        />
       </View>
+      <Divider inset={0} />
       <View style={s.switchRow}>
         <T v="body">Vibrate</T>
-        <Switch value={sound.vibrate} onChange={(v) => onChange({ ...sound, vibrate: v })} label="Vibrate" />
+        <Switch
+          value={sound.vibrate}
+          onChange={(v) => onChange({ ...sound, vibrate: v })}
+          label="Vibrate"
+          accent={accent.main}
+        />
       </View>
+      <PopupMenu
+        anchor={a.rectFor('main')}
+        options={options}
+        selected={sound.main}
+        keepOpen
+        width={260}
+        onSelect={(id) => {
+          onChange({ ...sound, main: id });
+          previewSound(id);
+        }}
+        onClose={close}
+      />
+      <PopupMenu
+        anchor={a.rectFor('pre')}
+        options={options}
+        selected={sound.pre}
+        keepOpen
+        width={260}
+        onSelect={(id) => {
+          onChange({ ...sound, pre: id });
+          previewSound(id);
+        }}
+        onClose={close}
+      />
     </View>
   );
 }
@@ -627,49 +815,31 @@ export function soundLabel(sound: SoundPrefs, title: (id: string) => string): st
 }
 
 const s = StyleSheet.create({
+  flex: { flex: 1 },
   gap12: { gap: 12 },
-  gap8: { gap: 8 },
-  center: { textAlign: 'center', marginTop: -6 },
-  centerRow: { justifyContent: 'center' },
+  gap10: { gap: 10 },
   centerText: { textAlign: 'center' },
-  custom: { gap: 10, padding: 14, borderRadius: 16, backgroundColor: color.fill },
+  everyRow: { flexDirection: 'row', alignItems: 'center' },
+  everyLabel: { width: 64 },
   letters: { flexDirection: 'row', justifyContent: 'space-between' },
   letter: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: color.white,
+    backgroundColor: color.fill,
   },
-  letterOn: { backgroundColor: color.yellow },
   dates: { flexDirection: 'row', flexWrap: 'wrap' },
   dateCell: { width: `${100 / 7}%`, height: 38, alignItems: 'center', justifyContent: 'center' },
   dateDot: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  summary: { marginTop: 4 },
-  strip: { paddingTop: 12, paddingBottom: 4, gap: 6 },
-  stripDots: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  stripCell: { flexDirection: 'row', alignItems: 'center' },
-  ellipsis: { marginRight: 10 },
-  stripDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: color.navy },
-  stripDiamond: {
-    width: 11,
-    height: 11,
-    backgroundColor: color.yellow,
-    borderWidth: 1.5,
-    borderColor: color.navy,
-    transform: [{ rotate: '45deg' }],
-  },
-  stripLabels: { flexDirection: 'row', justifyContent: 'space-between' },
   example: { alignItems: 'center', gap: 10, padding: 18, borderRadius: 18, backgroundColor: color.navy },
   miniGrid: { width: 120, height: 120, gap: 3 },
   miniRow: { flex: 1, flexDirection: 'row', gap: 3 },
   miniTile: { flex: 1, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.14)' },
-  miniTileOn: { backgroundColor: color.yellow },
   levelRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   levelDots: { flexDirection: 'row', gap: 8 },
   levelDot: { width: 18, height: 18, borderRadius: 9, backgroundColor: color.fillStrong },
-  levelDotOn: { backgroundColor: color.yellow },
   sentences: {
     minHeight: 80,
     borderRadius: 12,
@@ -678,14 +848,5 @@ const s = StyleSheet.create({
     textAlignVertical: 'top',
     fontFamily: font.regular,
   },
-  moreRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 6 },
-  soundRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: color.line,
-  },
-  switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 44 },
+  switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 52 },
 });

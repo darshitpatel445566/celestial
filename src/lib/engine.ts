@@ -2,11 +2,13 @@ import { PermissionsAndroid, Platform } from 'react-native';
 
 import Native, {
   type NativeTrigger,
+  type PendingActions,
   type Permissions,
   type RingState,
   type SoundOption,
 } from '../../modules/celestial-alarm';
-import { buildTriggers } from './schedule';
+import { bump, success, wrong } from './haptics';
+import { buildTriggers, currentOccurrence, tasksOf } from './schedule';
 import type { Item } from './types';
 
 /** False on web and on builds without the alarm engine. */
@@ -79,17 +81,24 @@ export async function requestNotifications(): Promise<boolean> {
 let soundCache: SoundOption[] | null = null;
 
 export const BUNDLED_SOUNDS: SoundOption[] = [
-  { id: 'raw:beacon', title: 'Beacon', group: 'celestial' },
-  { id: 'raw:rise', title: 'Rise', group: 'celestial' },
-  { id: 'raw:chime', title: 'Chime', group: 'celestial' },
-  { id: 'raw:drift', title: 'Drift', group: 'celestial' },
+  { id: 'raw:classic', title: 'Classic', group: 'loud' },
+  { id: 'raw:buzzer', title: 'Buzzer', group: 'loud' },
+  { id: 'raw:siren', title: 'Siren', group: 'loud' },
+  { id: 'raw:bell', title: 'Bell', group: 'loud' },
+  { id: 'raw:klaxon', title: 'Klaxon', group: 'loud' },
+  { id: 'raw:beacon', title: 'Beacon', group: 'gentle' },
+  { id: 'raw:rise', title: 'Rise', group: 'gentle' },
+  { id: 'raw:chime', title: 'Chime', group: 'gentle' },
+  { id: 'raw:drift', title: 'Drift', group: 'gentle' },
 ];
 
 export async function loadSounds(): Promise<SoundOption[]> {
   if (soundCache) return soundCache;
   if (!Native) return BUNDLED_SOUNDS;
   try {
-    soundCache = JSON.parse(await Native.getSounds()) as SoundOption[];
+    const list = JSON.parse(await Native.getSounds()) as SoundOption[];
+    // Our own sounds come from the known list; the phone's from the system.
+    soundCache = [...BUNDLED_SOUNDS, ...list.filter((x) => x.group === 'phone')];
     return soundCache;
   } catch {
     return BUNDLED_SOUNDS;
@@ -139,4 +148,52 @@ export function getMissed(): Missed[] {
   } catch {
     return [];
   }
+}
+
+/** Ticks and "Mark done" taps from notifications since the last call. */
+export function takePendingActions(): PendingActions | null {
+  if (!Native || !has('takePendingActions')) return null;
+  try {
+    const p = JSON.parse(Native.takePendingActions()) as PendingActions;
+    return p.toggles?.length || p.done?.length ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keep a reminder notification on screen in step with ticks made in the app. */
+export function updateShownTasks(item: Item): void {
+  if (!Native || !has('updateShownTasks')) return;
+  const tasks = tasksOf(item, currentOccurrence(item)).map((l) => ({
+    id: l.id,
+    text: l.text,
+    done: l.done,
+    level: l.level,
+  }));
+  try {
+    Native.updateShownTasks(item.id, JSON.stringify(tasks));
+  } catch {
+    // nothing on screen
+  }
+}
+
+export function dismissReminder(alarmId: string): void {
+  if (Native && has('dismissReminder')) Native.dismissReminder(alarmId);
+}
+
+/** Strong feedback for missions: the phone's vibrator at alarm strength when available. */
+export function haptic(kind: 'success' | 'wrong' | 'tick'): void {
+  if (Native && has('haptic')) {
+    Native.haptic(kind);
+    return;
+  }
+  if (kind === 'success') success();
+  else if (kind === 'wrong') wrong();
+  else bump();
+}
+
+export function addPendingListener(fn: () => void): () => void {
+  if (!Native) return () => {};
+  const a = Native.addListener('onPending', fn);
+  return () => a.remove();
 }

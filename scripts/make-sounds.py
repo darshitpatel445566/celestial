@@ -1,4 +1,4 @@
-"""Synthesizes Celestial's original alarm sounds (loopable) into the native module's res/raw folder.
+"""Synthesizes Celestial's original alarm sounds, loud and gentle (loopable), into the native module's res/raw folder.
 
 Run: python3 scripts/make-sounds.py   (needs numpy and ffmpeg with libvorbis)
 """
@@ -89,6 +89,83 @@ def drift():
     return normalize(pad * env, 0.82)
 
 
+def saw(phase, n=12):
+    """Band-limited-ish sawtooth from a phase array (radians)."""
+    return sum(((-1) ** (k + 1)) * np.sin(k * phase) / k for k in range(1, n + 1)) * (2 / np.pi)
+
+
+def square(phase, n=9):
+    return sum(np.sin((2 * k - 1) * phase) / (2 * k - 1) for k in range(1, n + 1)) * (4 / np.pi)
+
+
+def loud(buf, drive=2.2, peak=0.98):
+    """Soft-clip to raise perceived loudness, then normalize."""
+    buf = buf / (np.max(np.abs(buf)) or 1.0)
+    return normalize(np.tanh(drive * buf), peak)
+
+
+def classic():
+    # Digital alarm clock: four sharp high beeps, then a short gap.
+    buf = np.zeros(int(1.1 * SR))
+    t = np.arange(int(0.085 * SR)) / SR
+    beep = square(2 * np.pi * 2350 * t, 5)
+    env = np.ones_like(t)
+    a = int(0.003 * SR)
+    env[:a] = np.linspace(0, 1, a)
+    env[-a:] = np.linspace(1, 0, a)
+    for k in range(4):
+        place(buf, beep * env, 0.01 + k * 0.145)
+    return loud(buf, 1.6)
+
+
+def buzzer():
+    # Gritty low buzz in two bursts.
+    buf = np.zeros(int(1.2 * SR))
+    t = np.arange(int(0.32 * SR)) / SR
+    tone = saw(2 * np.pi * 196 * t, 18) + 0.5 * square(2 * np.pi * 392 * t, 7)
+    env = np.ones_like(t)
+    a = int(0.006 * SR)
+    env[:a] = np.linspace(0, 1, a)
+    env[-a:] = np.linspace(1, 0, a)
+    place(buf, tone * env, 0.01)
+    place(buf, tone * env, 0.45)
+    return loud(buf, 2.6)
+
+
+def siren():
+    # Smooth up-and-down sweep, 650 to 1450 Hz.
+    dur = 2.4
+    t = np.arange(int(dur * SR)) / SR
+    f = 1050 + 400 * np.sin(2 * np.pi * t / dur - np.pi / 2)
+    phase = 2 * np.pi * np.cumsum(f) / SR
+    tone = np.sin(phase) + 0.35 * np.sin(2 * phase) + 0.15 * np.sin(3 * phase)
+    return loud(tone, 2.0)
+
+
+def bell():
+    # Old mechanical alarm bell: fast hammer strikes, then a breath.
+    buf = np.zeros(int(2.0 * SR))
+    strike = pluck(1480.0, 0.25, ((1, 1.0, 0.09), (2.41, 0.6, 0.06), (3.93, 0.35, 0.04), (5.4, 0.2, 0.03)), attack=0.001)
+    k = 0
+    while 0.01 + k * 0.062 < 1.45:
+        place(buf, strike * (0.85 + 0.15 * (k % 2)), 0.01 + k * 0.062)
+        k += 1
+    return loud(buf, 2.4)
+
+
+def klaxon():
+    # Rising horn blast, twice.
+    buf = np.zeros(int(1.6 * SR))
+    t = np.arange(int(0.5 * SR)) / SR
+    f = 230 + 210 * np.clip(t / 0.35, 0, 1) ** 0.7
+    phase = 2 * np.pi * np.cumsum(f) / SR
+    tone = saw(phase, 20)
+    env = np.clip(t / 0.02, 0, 1) * np.clip((0.5 - t) / 0.05, 0, 1)
+    place(buf, tone * env, 0.01)
+    place(buf, tone * env, 0.75)
+    return loud(buf, 2.8)
+
+
 def write(name, samples):
     os.makedirs(OUT, exist_ok=True)
     pcm = (np.clip(samples, -1, 1) * 32767).astype(np.int16)
@@ -108,6 +185,11 @@ def write(name, samples):
 
 
 if __name__ == "__main__":
+    write("classic", classic())
+    write("buzzer", buzzer())
+    write("siren", siren())
+    write("bell", bell())
+    write("klaxon", klaxon())
     write("beacon", beacon())
     write("rise", rise())
     write("chime", chime())

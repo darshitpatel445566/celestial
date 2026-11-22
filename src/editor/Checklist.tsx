@@ -6,7 +6,7 @@ import { uid } from '../lib/defaults';
 import { tick } from '../lib/haptics';
 import type { Line } from '../lib/types';
 import { Checkbox } from '../ui/controls';
-import { color, font } from '../ui/theme';
+import { ALARM_ACCENT, color, font, type Accent } from '../ui/theme';
 
 const newLine = (over: Partial<Line> = {}): Line => ({
   id: uid('l'),
@@ -25,10 +25,12 @@ export function Checklist({
   lines,
   onChange,
   placeholder = 'Description',
+  accent = ALARM_ACCENT,
 }: {
   lines: Line[];
   onChange: (lines: Line[]) => void;
   placeholder?: string;
+  accent?: Accent;
 }) {
   const rows = lines.length ? lines : [newLine()];
   const refs = useRef(new Map<string, TextInputInstance | null>());
@@ -118,6 +120,7 @@ export function Checklist({
         <LineRow
           key={line.id}
           line={line}
+          accent={accent}
           placeholder={i === 0 && rows.length === 1 ? placeholder : undefined}
           inputRef={(r) => {
             refs.current.set(line.id, r);
@@ -135,6 +138,7 @@ export function Checklist({
 
 function LineRow({
   line,
+  accent,
   placeholder,
   inputRef,
   onText,
@@ -144,6 +148,7 @@ function LineRow({
   onOutdent,
 }: {
   line: Line;
+  accent: Accent;
   placeholder?: string;
   inputRef: (r: TextInputInstance | null) => void;
   onText: (t: string) => void;
@@ -175,7 +180,7 @@ function LineRow({
       <View style={[s.row, isTask && line.level === 1 && s.sub]}>
         {isTask ? (
           <View style={s.box}>
-            <Checkbox checked={line.done} onPress={onToggle} size={20} round />
+            <Checkbox checked={line.done} onPress={onToggle} size={20} round accent={accent} />
           </View>
         ) : null}
         <TextInput

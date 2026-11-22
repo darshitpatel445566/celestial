@@ -6,16 +6,30 @@ import { AppState, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { Permissions, RingState } from '../../modules/celestial-alarm';
-import { ymd } from '../lib/dates';
+import { TasksView } from '../home/TasksView';
+import { minutesOf, ymd } from '../lib/dates';
 import { cancelSnooze, getMissed, getPermissions, getRingState, hasEngine } from '../lib/engine';
-import { amPm, fmtClock, fmtDate, fmtLeft, fmtTime, repeatLabel } from '../lib/format';
-import { success } from '../lib/haptics';
-import { listEntries, preOffsets, taskCount, titleOf, type Group, type ListEntry } from '../lib/schedule';
+import { amPm, fmtClock, fmtDate, fmtDay, fmtLeft, fmtTime, repeatLabel } from '../lib/format';
+import { bump, success } from '../lib/haptics';
+import {
+  currentOccurrence,
+  listEntries,
+  nextRing,
+  preOffsets,
+  taskCount,
+  titleOf,
+  type Group,
+  type ListEntry,
+} from '../lib/schedule';
 import { useStore, useUi } from '../lib/store';
+import { taskEntries } from '../lib/tasks';
+import type { Kind } from '../lib/types';
 import { Button, Chip, Switch } from '../ui/controls';
 import { Icon, MISSION_ICONS, PartIcon } from '../ui/Icon';
+import { PopupMenu, useAnchor } from '../ui/popups';
+import { Segmented } from '../ui/Segmented';
 import { T } from '../ui/Text';
-import { color, SIDE } from '../ui/theme';
+import { accentFor, color, SIDE } from '../ui/theme';
 
 const GROUP_TITLES: Record<Group, string> = {
   notdone: 'Not done',
@@ -26,6 +40,7 @@ const GROUP_TITLES: Record<Group, string> = {
 };
 
 type Filter = 'all' | 'alarm' | 'reminder' | `tag:${string}`;
+type Page = 'alarms' | 'tasks';
 
 export default function Home() {
   const insets = useSafeAreaInsets();
@@ -36,6 +51,8 @@ export default function Home() {
   const showToast = useUi((s) => s.showToast);
   const updateReady = useUi((s) => s.updateReady);
   const [filter, setFilter] = useState<Filter>('all');
+  const [page, setPage] = useState<Page>('alarms');
+  const addMenu = useAnchor<'add'>();
   const [now, setNow] = useState(() => Date.now());
   const [ring, setRing] = useState<RingState | null>(null);
   const [perms, setPerms] = useState<Permissions | null>(null);
@@ -74,6 +91,7 @@ export default function Home() {
     [items, filter],
   );
   const entries = useMemo(() => listEntries(filtered, new Date(now)), [filtered, now]);
+  const tasks = useMemo(() => (page === 'tasks' ? taskEntries(filtered, new Date(now)) : []), [filtered, now, page]);
   const groups = useMemo(() => {
     const out: { group: Group; list: ListEntry[] }[] = [];
     for (const e of entries) {
@@ -94,6 +112,22 @@ export default function Home() {
     showToast(`Marked done · ${titleOf(e.item)}`, () => setDone(e.item.id, occ, false));
   };
 
+  /** Switching on shows when it will ring, so a one-time alarm moving to tomorrow is never a surprise. */
+  const toggle = (id: string, on: boolean) => {
+    setEnabled(id, on);
+    if (!on) {
+      cancelSnooze(id);
+      return;
+    }
+    const item = useStore.getState().items.find((i) => i.id === id);
+    if (!item) return;
+    const word = item.kind === 'alarm' ? 'Alarm' : 'Reminder';
+    const next = nextRing(item);
+    showToast(next ? `${word} on · ${fmtDay(ymd(next.at))} · ${fmtTime(minutesOf(next.at))}` : `${word} on`);
+  };
+
+  const create = (kind: Kind) => router.push({ pathname: '/edit', params: { kind } });
+
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
       <View style={s.header}>
@@ -101,22 +135,24 @@ export default function Home() {
           <Image source={require('../../assets/images/mark.png')} style={s.mark} contentFit="contain" />
           <T v="title">Celestial</T>
         </View>
-        <View style={s.headerActions}>
-          <Pressable
-            onPress={() => router.push('/setup')}
-            hitSlop={10}
-            accessibilityLabel="Settings and test"
-            style={s.iconBtn}>
-            <Icon name="cog-outline" size={24} c={color.ink2} />
-          </Pressable>
-          <Pressable
-            onPress={() => router.push('/edit')}
-            accessibilityLabel="New alarm"
-            accessibilityRole="button"
-            style={({ pressed }) => [s.add, pressed && s.pressed]}>
-            <Icon name="plus" size={28} c={color.ink} />
-          </Pressable>
-        </View>
+        <Pressable
+          onPress={() => router.push('/setup')}
+          hitSlop={10}
+          accessibilityLabel="Settings and test"
+          style={s.iconBtn}>
+          <Icon name="cog-outline" size={24} c={color.ink2} />
+        </Pressable>
+      </View>
+
+      <View style={s.switchWrap}>
+        <Segmented
+          options={[
+            { key: 'alarms', label: 'Alarms' },
+            { key: 'tasks', label: 'Tasks' },
+          ]}
+          value={page}
+          onChange={setPage}
+        />
       </View>
 
       <ScrollView
@@ -179,18 +215,20 @@ export default function Home() {
           </View>
         ) : null}
 
-        {items.length === 0 ? (
+        {page === 'tasks' ? <TasksView entries={tasks} /> : null}
+
+        {page === 'alarms' && items.length === 0 ? (
           <View style={s.empty}>
             <Image source={require('../../assets/images/mark.png')} style={s.emptyMark} contentFit="contain" />
             <T v="headline">No alarms yet</T>
             <T v="sub" c={color.ink2} style={s.emptyText}>
               Set one with pre-alarms, or a reminder with daily nudges before it’s due.
             </T>
-            <Button label="New alarm" icon="plus" onPress={() => router.push('/edit')} style={s.emptyBtn} />
+            <Button label="New alarm" icon="plus" onPress={() => create('alarm')} style={s.emptyBtn} />
           </View>
         ) : null}
 
-        {groups.map(({ group, list }) => (
+        {(page === 'alarms' ? groups : []).map(({ group, list }) => (
           <View key={group}>
             <T v="footMedium" c={group === 'notdone' ? color.red : color.ink2} style={s.groupTitle}>
               {GROUP_TITLES[group]}
@@ -209,16 +247,36 @@ export default function Home() {
                       : 0
                 }
                 missedAt={missed[e.item.id]}
-                onToggle={(on) => {
-                  setEnabled(e.item.id, on);
-                  if (!on) cancelSnooze(e.item.id);
-                }}
+                onToggle={(on) => toggle(e.item.id, on)}
                 onDone={() => markDone(e)}
               />
             ))}
           </View>
         ))}
       </ScrollView>
+
+      <Pressable
+        ref={addMenu.ref('add')}
+        onPress={() => {
+          bump();
+          addMenu.show('add');
+        }}
+        accessibilityLabel="New alarm or reminder"
+        accessibilityRole="button"
+        style={({ pressed }) => [s.fab, { bottom: insets.bottom + 20 }, pressed && s.fabPressed]}>
+        <Icon name="plus" size={30} c={color.ink} />
+      </Pressable>
+      <PopupMenu
+        anchor={addMenu.rectFor('add')}
+        plain
+        width={210}
+        options={[
+          { key: 'alarm', label: 'Alarm', icon: 'alarm' },
+          { key: 'reminder', label: 'Reminder', icon: 'bell-outline', iconColor: color.blue },
+        ]}
+        onSelect={(k) => create(k as Kind)}
+        onClose={addMenu.close}
+      />
     </View>
   );
 }
@@ -243,15 +301,17 @@ function AlarmRow({
 }) {
   const { item, group, next, overdue } = entry;
   const off = group === 'off';
+  const reminder = item.kind === 'reminder';
+  const accent = accentFor(item.kind);
   const pre = preOffsets(item).length;
-  const tasks = taskCount(item);
+  const tasks = taskCount(item, currentOccurrence(item));
   const ink = off ? color.ink3 : color.ink;
   const sub = off ? color.ink3 : color.ink2;
   const nextDay = next ? ymd(next.at) : null;
   return (
     <Pressable
       onPress={() => router.push({ pathname: '/edit', params: { id: item.id } })}
-      style={({ pressed }) => [s.row, pressed && s.rowPressed]}
+      style={({ pressed }) => [s.row, reminder && s.rowReminder, pressed && s.rowPressed]}
       accessibilityRole="button"
       accessibilityLabel={`${titleOf(item)}, ${fmtTime(item.time)}`}>
       <View style={[s.tagBar, { backgroundColor: tagColor ?? 'transparent' }]} />
@@ -287,10 +347,15 @@ function AlarmRow({
               </T>
             </View>
           ) : null}
-          <Switch value={item.enabled && !off} onChange={onToggle} label={`${titleOf(item)} on`} />
+          <Switch
+            value={item.enabled && !off}
+            onChange={onToggle}
+            label={`${titleOf(item)} on`}
+            accent={accent.main}
+          />
         </View>
         <View style={s.line2}>
-          {item.kind === 'reminder' ? <Icon name="bell-outline" size={16} c={sub} /> : null}
+          {reminder ? <Icon name="bell-outline" size={16} c={off ? sub : color.blue} /> : null}
           <T v="callout" c={ink} numberOfLines={1} style={s.flexShrink}>
             {titleOf(item)}
           </T>
@@ -354,10 +419,12 @@ function AlarmRow({
         {overdue ? (
           <Pressable
             onPress={onDone}
-            style={({ pressed }) => [s.donePill, pressed && s.pressed]}
+            style={({ pressed }) => [s.donePill, { backgroundColor: accent.main }, pressed && s.pressed]}
             accessibilityRole="button">
-            <Icon name="check" size={16} c={color.ink} />
-            <T v="footMedium">Mark done</T>
+            <Icon name="check" size={16} c={accent.on} />
+            <T v="footMedium" c={accent.on}>
+              Mark done
+            </T>
           </Pressable>
         ) : null}
       </View>
@@ -379,16 +446,24 @@ const s = StyleSheet.create({
   },
   brand: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   mark: { width: 34, height: 34 },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  add: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  switchWrap: { paddingHorizontal: SIDE, paddingBottom: 10 },
+  fab: {
+    position: 'absolute',
+    right: SIDE,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     backgroundColor: color.yellow,
     alignItems: 'center',
     justifyContent: 'center',
+    elevation: 6,
+    shadowColor: '#1D1B3A',
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
   },
+  fabPressed: { transform: [{ scale: 0.94 }] },
   filtersScroll: { flexGrow: 0 },
   filters: { paddingHorizontal: SIDE, gap: 8, paddingBottom: 10 },
   notice: {
@@ -410,6 +485,7 @@ const s = StyleSheet.create({
   emptyBtn: { marginTop: 16, alignSelf: 'stretch' },
   groupTitle: { paddingHorizontal: SIDE, paddingTop: 18, paddingBottom: 6 },
   row: { flexDirection: 'row', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: color.line },
+  rowReminder: { backgroundColor: color.blueRow },
   rowPressed: { backgroundColor: color.fill },
   tagBar: { width: 4, marginVertical: 10, borderTopRightRadius: 2, borderBottomRightRadius: 2 },
   rowMain: { flex: 1, paddingLeft: SIDE - 4, paddingRight: SIDE, paddingVertical: 12, gap: 2 },
@@ -431,6 +507,5 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     height: 32,
     borderRadius: 16,
-    backgroundColor: color.yellow,
   },
 });

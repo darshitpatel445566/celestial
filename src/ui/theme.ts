@@ -17,7 +17,23 @@ export const color = {
   red: '#E5484D',
   redSoft: '#FDECEC',
   white: '#FFFFFF',
+  // Reminders wear blue where alarms wear yellow.
+  blue: '#3F80FF',
+  blueSoft: '#E8F0FF',
+  blueRow: '#F3F7FF',
+  blueDeep: '#1D4DB8',
+  /** Ringing screen for reminders (alarms ring on navy) */
+  blueNight: '#1B44A0',
 } as const;
+
+export type Accent = { main: string; soft: string; on: string };
+
+export const ALARM_ACCENT: Accent = { main: color.yellow, soft: color.yellowSoft, on: color.ink };
+export const REMINDER_ACCENT: Accent = { main: color.blue, soft: color.blueSoft, on: color.white };
+
+export function accentFor(kind: 'alarm' | 'reminder'): Accent {
+  return kind === 'reminder' ? REMINDER_ACCENT : ALARM_ACCENT;
+}
 
 export const bands: Record<PartOfDay, string> = {
   night: '#E3E5F3',

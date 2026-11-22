@@ -7,7 +7,7 @@ import { useEffect } from 'react';
 import { AppState, Platform, StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
-import { addRingListener, getRingState, syncSchedule } from '../lib/engine';
+import { addPendingListener, addRingListener, getRingState, syncSchedule, takePendingActions } from '../lib/engine';
 import { useStore, useUi } from '../lib/store';
 import { Toast } from '../ui/Toast';
 import { color } from '../ui/theme';
@@ -30,6 +30,12 @@ function openRingIfRinging() {
   if (getRingState()?.ringing) router.navigate('/ring');
 }
 
+/** Ticks and "Mark done" taps made in notifications while the app was closed. */
+function applyNotificationActions() {
+  const p = takePendingActions();
+  if (p) useStore.getState().applyPending(p);
+}
+
 export default function RootLayout() {
   useFonts({ ...MaterialCommunityIcons.font, ...webFonts });
   const items = useStore((s) => s.items);
@@ -41,17 +47,22 @@ export default function RootLayout() {
   }, [items]);
 
   useEffect(() => {
+    applyNotificationActions();
     const sub = AppState.addEventListener('change', (st) => {
       if (st === 'active') {
+        applyNotificationActions();
         syncSchedule(useStore.getState().items);
         openRingIfRinging();
       }
     });
     const offRing = addRingListener(() => router.navigate('/ring'));
+    // A tick in the notification while the app is open lands here straight away.
+    const offPending = addPendingListener(applyNotificationActions);
     const first = setTimeout(openRingIfRinging, 50);
     return () => {
       sub.remove();
       offRing();
+      offPending();
       clearTimeout(first);
     };
   }, []);
@@ -81,10 +92,7 @@ export default function RootLayout() {
         <Stack.Screen name="index" />
         <Stack.Screen name="edit" options={{ animation: 'slide_from_bottom' }} />
         <Stack.Screen name="setup" options={{ animation: 'slide_from_bottom' }} />
-        <Stack.Screen
-          name="ring"
-          options={{ gestureEnabled: false, animation: 'fade', contentStyle: { backgroundColor: color.navy } }}
-        />
+        <Stack.Screen name="ring" options={{ gestureEnabled: false, animation: 'fade' }} />
       </Stack>
       <Toast />
     </GestureHandlerRootView>

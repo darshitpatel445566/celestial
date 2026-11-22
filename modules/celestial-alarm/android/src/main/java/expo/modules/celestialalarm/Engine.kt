@@ -17,11 +17,24 @@ internal object Scheduler {
   fun setSchedule(ctx: Context, json: String) {
     val list = mutableListOf<JSONObject>()
     val arr = JSONArray(json)
+    val done = Actions.pendingDoneKeys(ctx)
     for (i in 0 until arr.length()) {
-      val o = arr.optJSONObject(i)
-      if (o != null) list.add(o)
+      val o = arr.optJSONObject(i) ?: continue
+      // A "Mark done" tapped in a notification wins until JavaScript has applied it.
+      if (done.contains(o.optString("alarmId", "") + "|" + o.optString("occurrence", ""))) continue
+      list.add(o)
     }
     Store.writeList(ctx, Store.SCHEDULE, list)
+    armNext(ctx)
+  }
+
+  /** Stops the remaining reminders of one occurrence (after "Mark done"). */
+  fun dropOccurrence(ctx: Context, alarmId: String, occurrence: String) {
+    for (key in arrayOf(Store.SCHEDULE, Store.SNOOZES)) {
+      val list = Store.readList(ctx, key)
+      val keep = list.filter { !(it.optString("alarmId", "") == alarmId && it.optString("occurrence", "") == occurrence) }
+      if (keep.size != list.size) Store.writeList(ctx, key, keep)
+    }
     armNext(ctx)
   }
 
@@ -272,5 +285,170 @@ internal object Ringer {
     if (!j.has("alarmId")) j.put("alarmId", "test")
     Scheduler.addSnooze(ctx, j)
     Scheduler.armNext(ctx)
+  }
+}
+
+/**
+ * Taps on reminder notifications: tick a task, mark done, snooze. They are stored for JavaScript
+ * (which owns the alarms) and applied the next time the app runs.
+ */
+internal object Actions {
+  private fun loadPending(ctx: Context): JSONObject = Store.readObject(ctx, Store.PENDING) ?: JSONObject()
+
+  private fun savePending(ctx: Context, o: JSONObject) {
+    Store.writeObject(ctx, Store.PENDING, o)
+  }
+
+  private fun loadShown(ctx: Context): JSONObject = Store.readObject(ctx, Store.SHOWN) ?: JSONObject()
+
+  fun pendingDoneKeys(ctx: Context): Set<String> {
+    val out = mutableSetOf<String>()
+    val done = loadPending(ctx).optJSONArray("done") ?: return out
+    for (i in 0 until done.length()) {
+      val o = done.optJSONObject(i) ?: continue
+      out.add(o.optString("alarmId", "") + "|" + o.optString("occurrence", ""))
+    }
+    return out
+  }
+
+  /** The trigger's tasks with any notification ticks JavaScript has not seen yet. */
+  fun withPendingTicks(ctx: Context, t: Trigger): List<JSONObject> {
+    val tasks = t.tasks().map { JSONObject(it.toString()) }
+    val toggles = loadPending(ctx).optJSONArray("toggles") ?: return tasks
+    for (i in 0 until toggles.length()) {
+      val tg = toggles.optJSONObject(i) ?: continue
+      if (tg.optString("alarmId", "") != t.alarmId || tg.optString("occurrence", "") != t.occurrence) continue
+      for (task in tasks) {
+        if (task.optString("id", "") == tg.optString("taskId", "")) task.put("done", tg.optBoolean("done", false))
+      }
+    }
+    return tasks
+  }
+
+  fun rememberShown(ctx: Context, t: Trigger, snoozedUntil: Long) {
+    val shown = loadShown(ctx)
+    val entry = JSONObject()
+    entry.put("trigger", t.json)
+    entry.put("snoozedUntil", snoozedUntil)
+    entry.put("at", System.currentTimeMillis())
+    shown.put(t.alarmId, entry)
+    // keep it small
+    val keys = mutableListOf<String>()
+    val iter = shown.keys()
+    while (iter.hasNext()) keys.add(iter.next())
+    if (keys.size > 30) {
+      keys.sortBy { key -> shown.optJSONObject(key)?.optLong("at", 0L) ?: 0L }
+      for (k in keys.take(keys.size - 30)) shown.remove(k)
+    }
+    Store.writeObject(ctx, Store.SHOWN, shown)
+  }
+
+  fun forgetShown(ctx: Context, alarmId: String) {
+    val shown = loadShown(ctx)
+    if (shown.has(alarmId)) {
+      shown.remove(alarmId)
+      Store.writeObject(ctx, Store.SHOWN, shown)
+    }
+  }
+
+  fun toggleTask(ctx: Context, alarmId: String, taskId: String, occurrence: String) {
+    val entry = loadShown(ctx).optJSONObject(alarmId)
+    val trigger = entry?.optJSONObject("trigger")
+    var current = false
+    if (trigger != null) {
+      val task = withPendingTicks(ctx, Trigger(trigger)).firstOrNull { it.optString("id", "") == taskId }
+      current = task?.optBoolean("done", false) ?: false
+    }
+    val pending = loadPending(ctx)
+    val old = pending.optJSONArray("toggles") ?: JSONArray()
+    val next = JSONArray()
+    for (i in 0 until old.length()) {
+      val o = old.optJSONObject(i) ?: continue
+      val same = o.optString("alarmId", "") == alarmId && o.optString("taskId", "") == taskId &&
+        o.optString("occurrence", "") == occurrence
+      if (!same) next.put(o)
+    }
+    val tick = JSONObject()
+    tick.put("alarmId", alarmId)
+    tick.put("taskId", taskId)
+    tick.put("occurrence", occurrence)
+    tick.put("done", !current)
+    tick.put("at", System.currentTimeMillis())
+    next.put(tick)
+    pending.put("toggles", next)
+    savePending(ctx, pending)
+    if (entry != null) Notifs.redrawReminder(ctx, entry)
+    RingEvents.emit("onPending", mapOf("kind" to "task"))
+  }
+
+  fun markDone(ctx: Context, alarmId: String, occurrence: String) {
+    val pending = loadPending(ctx)
+    val done = pending.optJSONArray("done") ?: JSONArray()
+    val o = JSONObject()
+    o.put("alarmId", alarmId)
+    o.put("occurrence", occurrence)
+    o.put("at", System.currentTimeMillis())
+    done.put(o)
+    pending.put("done", done)
+    savePending(ctx, pending)
+    Scheduler.dropOccurrence(ctx, alarmId, occurrence)
+    Notifs.cancel(ctx, Notifs.notifId(alarmId))
+    forgetShown(ctx, alarmId)
+    RingEvents.emit("onPending", mapOf("kind" to "done"))
+  }
+
+  fun snoozeReminder(ctx: Context, alarmId: String) {
+    val entry = loadShown(ctx).optJSONObject(alarmId) ?: return
+    val trigger = entry.optJSONObject("trigger") ?: return
+    val t = Trigger(trigger)
+    val minutes = if (t.snoozeMinutes > 0) t.snoozeMinutes else 10
+    val at = System.currentTimeMillis() + minutes * 60_000L
+    val j = t.copyJson()
+    j.put("id", t.alarmId + ":rsnooze:" + at)
+    j.put("kind", "snooze")
+    j.put("style", "notify")
+    j.put("at", at)
+    j.remove("wall")
+    Scheduler.addSnooze(ctx, j)
+    Scheduler.armNext(ctx)
+    Notifs.showReminder(ctx, t, true, at)
+  }
+
+  /** JavaScript ticked tasks in the app: redraw the reminder on screen, if any. */
+  fun updateShownTasks(ctx: Context, alarmId: String, tasksJson: String) {
+    val shown = loadShown(ctx)
+    val entry = shown.optJSONObject(alarmId) ?: return
+    val trigger = entry.optJSONObject("trigger") ?: return
+    trigger.put("tasks", JSONArray(tasksJson))
+    entry.put("trigger", trigger)
+    shown.put(alarmId, entry)
+    Store.writeObject(ctx, Store.SHOWN, shown)
+    Notifs.redrawReminder(ctx, entry)
+  }
+
+  fun dismiss(ctx: Context, alarmId: String) {
+    Notifs.cancel(ctx, Notifs.notifId(alarmId))
+    forgetShown(ctx, alarmId)
+  }
+
+  /** Hands the stored taps to JavaScript once; folds ticks into the reminders still on screen. */
+  fun takePending(ctx: Context): String {
+    val pending = loadPending(ctx)
+    val toggles = pending.optJSONArray("toggles")
+    if (toggles != null && toggles.length() > 0) {
+      val shown = loadShown(ctx)
+      val keys = shown.keys()
+      while (keys.hasNext()) {
+        val key = keys.next()
+        val entry = shown.optJSONObject(key) ?: continue
+        val trigger = entry.optJSONObject("trigger") ?: continue
+        val merged = JSONArray()
+        for (task in withPendingTicks(ctx, Trigger(trigger))) merged.put(task)
+        trigger.put("tasks", merged)
+      }
+      Store.writeObject(ctx, Store.SHOWN, shown)
+    }
+    Store.writeObject(ctx, Store.PENDING, null)
+    return pending.toString()
   }
 }

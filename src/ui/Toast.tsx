@@ -8,7 +8,7 @@ import { Icon } from './Icon';
 import { T } from './Text';
 import { color, SIDE } from './theme';
 
-/** The short message after saving, e.g. "Alarm set · Tomorrow · 8 h 10 min · Undo". */
+/** The short message after saving, e.g. "Alarm set · Tomorrow · 8 h 10 min · Undo". Sits above the + button. */
 export function Toast() {
   const toast = useUi((s) => s.toast);
   const hide = useUi((s) => s.hideToast);
@@ -20,7 +20,7 @@ export function Toast() {
   }, [toast, hide]);
   if (!toast) return null;
   return (
-    <View pointerEvents="box-none" style={[styles.wrap, { bottom: insets.bottom + 20 }]}>
+    <View pointerEvents="box-none" style={[styles.wrap, { bottom: insets.bottom + 96 }]}>
       <Animated.View
         key={toast.id}
         entering={FadeInDown.duration(220)}

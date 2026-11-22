@@ -60,7 +60,7 @@ export function pickTiles(size: number, lit: number): number[] {
   return all.slice(0, lit).sort((a, b) => a - b);
 }
 
-export const TILES_LOOK_MS = 3000;
+export const TILES_LOOK_MS = 1750;
 
 /** One short sentence per round; longer each level. */
 export const SENTENCES: string[][] = [

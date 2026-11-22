@@ -15,7 +15,17 @@ internal object C {
   const val ACTION_FIRE = "expo.modules.celestialalarm.action.FIRE"
   const val ACTION_SNOOZE = "expo.modules.celestialalarm.action.SNOOZE"
   const val ACTION_DISMISS = "expo.modules.celestialalarm.action.DISMISS"
+  const val ACTION_TASK = "expo.modules.celestialalarm.action.TASK"
+  const val ACTION_DONE = "expo.modules.celestialalarm.action.DONE"
+  const val ACTION_REMIND_SNOOZE = "expo.modules.celestialalarm.action.REMIND_SNOOZE"
   const val EXTRA_RING = "celestial_ring"
+  const val EXTRA_ALARM = "celestial_alarm"
+  const val EXTRA_TASK = "celestial_task"
+  const val EXTRA_OCCURRENCE = "celestial_occurrence"
+
+  val YELLOW: Int = 0xFFFFC93D.toInt()
+  val BLUE: Int = 0xFF3F80FF.toInt()
+  val RED: Int = 0xFFE5484D.toInt()
 
   const val CH_RING = "celestial_ring_v1"
   const val CH_REMIND = "celestial_reminders_v1"
@@ -54,6 +64,23 @@ internal class Trigger(val json: JSONObject) {
   val snoozeMinutes: Int get() = json.optInt("snoozeMinutes", 10)
   val snoozeLimit: Int get() = json.optInt("snoozeLimit", 3)
   val snoozeCount: Int get() = json.optInt("snoozeCount", 0)
+  val occurrence: String get() = json.optString("occurrence", "")
+  val isReminder: Boolean get() = json.optString("itemKind", "alarm") == "reminder"
+  val due: String get() = json.optString("due", body)
+  val overdue: Boolean get() = json.optBoolean("overdue", false)
+  val canDone: Boolean get() = json.optBoolean("canDone", false)
+  val color: Int get() = if (isReminder) C.BLUE else C.YELLOW
+
+  /** Checklist items: {id, text, done, level} */
+  fun tasks(): List<JSONObject> {
+    val out = mutableListOf<JSONObject>()
+    val arr = json.optJSONArray("tasks") ?: return out
+    for (i in 0 until arr.length()) {
+      val o = arr.optJSONObject(i)
+      if (o != null) out.add(o)
+    }
+    return out
+  }
 
   val timeMillis: Long = computeTime()
 
@@ -88,6 +115,10 @@ internal object Store {
   const val MISSED = "missed"
   const val QUEUE = "queue"
   const val RING = "ring"
+  /** Reminder notifications on screen, by alarm id (to redraw them after a task tick) */
+  const val SHOWN = "shown"
+  /** Ticks and "Mark done" taps from notifications, for JavaScript to apply */
+  const val PENDING = "pending"
 
   fun prefs(ctx: Context): SharedPreferences =
     ctx.applicationContext.getSharedPreferences(C.PREFS, Context.MODE_PRIVATE)
@@ -146,6 +177,14 @@ internal object Intents {
     intent.setAction(Intent.ACTION_MAIN)
     intent.addCategory(Intent.CATEGORY_LAUNCHER)
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    return intent
+  }
+
+  /** A broadcast to our receiver; the data URI keeps each button's PendingIntent distinct. */
+  fun action(ctx: Context, action: String, key: String): Intent {
+    val intent = Intent(ctx, AlarmReceiver::class.java)
+    intent.setAction(action)
+    intent.setData(Uri.parse("celestial-action://" + Uri.encode(action) + "/" + Uri.encode(key)))
     return intent
   }
 

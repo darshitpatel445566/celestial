@@ -133,9 +133,23 @@ type Props = {
   onPins: (pins: number[]) => void;
   showHint: boolean;
   onUsed: (which: 'alarm' | 'pre') => void;
+  /** Yellow for alarms, blue for reminders */
+  accent?: string;
 };
 
-export function TimelineSlider({ alarm, lead, gap, pins, min, onAlarm, onLead, onPins, showHint, onUsed }: Props) {
+export function TimelineSlider({
+  alarm,
+  lead,
+  gap,
+  pins,
+  min,
+  onAlarm,
+  onLead,
+  onPins,
+  showHint,
+  onUsed,
+  accent = color.yellow,
+}: Props) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 30000);
@@ -213,7 +227,7 @@ export function TimelineSlider({ alarm, lead, gap, pins, min, onAlarm, onLead, o
     [scroll, viewW, width],
   );
 
-  // Keep the diamond in view when the time changes from outside (‹ › buttons, calendar).
+  // Keep the diamond in view when the time changes elsewhere (time wheel, calendar).
   const firstLayout = useRef(true);
   useEffect(() => {
     if (drag.get() !== 0) return;
@@ -431,7 +445,9 @@ export function TimelineSlider({ alarm, lead, gap, pins, min, onAlarm, onLead, o
           <Animated.View style={[styles.content, { width }, contentStyle]}>
             <TrackStatic origin={origin} total={total} nowM={nowM} />
 
-            {lead > 0 ? <View style={[styles.preSegment, { left: xL, width: xA - xL }]} /> : null}
+            {lead > 0 ? (
+              <View style={[styles.preSegment, { left: xL, width: xA - xL, backgroundColor: accent }]} />
+            ) : null}
             {dotMinutes.map((m) => (
               <View key={`d${m}`} style={[styles.dot, { left: m * PX - 4 }]} />
             ))}
@@ -468,7 +484,7 @@ export function TimelineSlider({ alarm, lead, gap, pins, min, onAlarm, onLead, o
                 style={[styles.hit, alarmHit]}
                 accessibilityLabel="Alarm time. Drag to change"
                 accessibilityRole="adjustable">
-                <View style={[styles.diamond, { marginLeft: xA - alarmHit.left - 9 }]} />
+                <View style={[styles.diamond, { marginLeft: xA - alarmHit.left - 9, backgroundColor: accent }]} />
               </View>
             </GestureDetector>
           </Animated.View>
@@ -480,10 +496,10 @@ export function TimelineSlider({ alarm, lead, gap, pins, min, onAlarm, onLead, o
             <T v="foot" c={color.ink2}>
               Drag{' '}
             </T>
-            <View style={styles.miniDiamond} />
+            <View style={[styles.miniDiamond, { backgroundColor: accent }]} />
             <T v="foot" c={color.ink2}>
               {' '}
-              to set the time.
+              to move the time.
             </T>
           </View>
           <View style={styles.hintLine}>

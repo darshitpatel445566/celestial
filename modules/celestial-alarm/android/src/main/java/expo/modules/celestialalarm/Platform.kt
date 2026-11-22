@@ -14,15 +14,26 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.VibrationAttributes
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.provider.Settings
 import android.view.WindowManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.lang.ref.WeakReference
 
-/** Alarm sounds: four bundled Celestial sounds plus the phone's own alarm sounds. */
+/** Alarm sounds: Celestial's own (loud and gentle) plus the phone's alarm sounds. */
 internal object Sounds {
-  private val bundled = listOf(
+  private val loud = listOf(
+    "classic" to "Classic",
+    "buzzer" to "Buzzer",
+    "siren" to "Siren",
+    "bell" to "Bell",
+    "klaxon" to "Klaxon"
+  )
+  private val gentle = listOf(
     "beacon" to "Beacon",
     "rise" to "Rise",
     "chime" to "Chime",
@@ -34,6 +45,11 @@ internal object Sounds {
 
   fun rawUri(ctx: Context, name: String): Uri {
     val res = when (name) {
+      "classic" -> R.raw.celestial_classic
+      "buzzer" -> R.raw.celestial_buzzer
+      "siren" -> R.raw.celestial_siren
+      "bell" -> R.raw.celestial_bell
+      "klaxon" -> R.raw.celestial_klaxon
       "rise" -> R.raw.celestial_rise
       "chime" -> R.raw.celestial_chime
       "drift" -> R.raw.celestial_drift
@@ -54,11 +70,18 @@ internal object Sounds {
 
   fun list(ctx: Context): String {
     val arr = JSONArray()
-    for (pair in bundled) {
+    for (pair in loud) {
       val o = JSONObject()
       o.put("id", "raw:" + pair.first)
       o.put("title", pair.second)
-      o.put("group", "celestial")
+      o.put("group", "loud")
+      arr.put(o)
+    }
+    for (pair in gentle) {
+      val o = JSONObject()
+      o.put("id", "raw:" + pair.first)
+      o.put("title", pair.second)
+      o.put("group", "gentle")
       arr.put(o)
     }
     try {
@@ -123,6 +146,65 @@ internal object Sounds {
       p.release()
     } catch (e: Exception) {
       // ignore
+    }
+  }
+}
+
+/** Vibration that is always felt (alarm usage), for missions. */
+internal object Haptic {
+  fun vibrator(ctx: Context): Vibrator? {
+    return try {
+      if (Build.VERSION.SDK_INT >= 31) {
+        val manager = ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+        manager.defaultVibrator
+      } else {
+        ctx.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+      }
+    } catch (e: Exception) {
+      null
+    }
+  }
+
+  fun play(ctx: Context, kind: String) {
+    val v = vibrator(ctx) ?: return
+    if (!v.hasVibrator()) return
+    val timings: LongArray
+    val amps: IntArray
+    when (kind) {
+      "success" -> {
+        timings = longArrayOf(0, 45, 70, 90)
+        amps = intArrayOf(0, 255, 0, 255)
+      }
+      "wrong" -> {
+        timings = longArrayOf(0, 220)
+        amps = intArrayOf(0, 180)
+      }
+      else -> {
+        timings = longArrayOf(0, 22)
+        amps = intArrayOf(0, 160)
+      }
+    }
+    try {
+      if (Build.VERSION.SDK_INT >= 26) {
+        val effect = if (v.hasAmplitudeControl()) {
+          VibrationEffect.createWaveform(timings, amps, -1)
+        } else {
+          VibrationEffect.createWaveform(timings, -1)
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+          v.vibrate(effect, VibrationAttributes.createForUsage(VibrationAttributes.USAGE_ALARM))
+        } else {
+          val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ALARM)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+          v.vibrate(effect, attrs)
+        }
+      } else {
+        v.vibrate(timings, -1)
+      }
+    } catch (e: Exception) {
+      // no vibration available
     }
   }
 }

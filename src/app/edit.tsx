@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -15,57 +15,45 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Checklist } from '../editor/Checklist';
 import {
-  EndRepeatPanel,
+  EndRepeatRow,
   MissionPanel,
   missionLabel,
-  RepeatPanel,
+  RepeatRow,
   SnoozePanel,
   snoozeLabel,
   SoundPanel,
   soundLabel,
   WindowPanel,
 } from '../editor/panels';
-import { Calendar, EnergyPicker, NumberWheel, TagPicker } from '../editor/pickers';
+import { Calendar, EnergyPicker, TagPicker } from '../editor/pickers';
 import { TimelineSlider } from '../editor/TimelineSlider';
+import { TimeWheel } from '../editor/TimeWheel';
 import { addDays, atTime, diffDays, minutesOf, today as todayYmd, ymd } from '../lib/dates';
 import { newItem } from '../lib/defaults';
-import { cancelSnooze, hasEngine, loadSounds, requestNotifications, soundTitle } from '../lib/engine';
 import {
-  amPm,
-  fmtClock,
-  fmtDay,
-  fmtLeft,
-  fmtMinutes,
-  fmtRange,
-  fromLabel,
-  partOfDay,
-  repeatLabel,
-  untilLabel,
-  windowIsOff,
-} from '../lib/format';
-import { bump, success, tick } from '../lib/haptics';
-import { nextOccurrence } from '../lib/repeat';
-import { fromDays, nextRing, ringsLikeAlarm, rollForwardIfPast, untilDay } from '../lib/schedule';
+  cancelSnooze,
+  hasEngine,
+  loadSounds,
+  requestNotifications,
+  soundTitle,
+  updateShownTasks,
+} from '../lib/engine';
+import { fmtDate, fmtDay, fmtLeft, fmtMinutes, fmtRange, fromLabel, untilLabel, windowIsOff } from '../lib/format';
+import { success, tick } from '../lib/haptics';
+import { effectiveDay, fromDays, nextRing, ringsLikeAlarm, rollForwardIfPast, untilDay } from '../lib/schedule';
 import { useStore, useUi } from '../lib/store';
 import type { Item, Kind, Line } from '../lib/types';
 import { MissionRunner } from '../missions/Missions';
 import { Button, Checkbox, Divider, Row } from '../ui/controls';
-import { Icon, PART_NAME, PartIcon } from '../ui/Icon';
+import { Icon } from '../ui/Icon';
+import { Popover, useAnchor } from '../ui/popups';
 import { T } from '../ui/Text';
-import { color, font, SIDE } from '../ui/theme';
+import { accentFor, color, font, SIDE } from '../ui/theme';
+import { Wheel, WheelGroup, WheelLabel } from '../ui/Wheel';
 
-type OpenKey = 'date' | 'gap' | 'repeat' | 'end' | 'window' | 'mission' | 'snooze' | 'sound';
+type OpenKey = 'gap' | 'window' | 'mission' | 'snooze' | 'sound';
 
 const GAPS = [...Array.from({ length: 60 }, (_, i) => i + 1), 75, 90, 120];
-
-/** The day the alarm rings next: the start date for one-time items, the next occurrence for repeating ones. */
-function displayDay(item: Item, now: Date): string {
-  if (item.repeat === 'once') return item.date;
-  const today = todayYmd(now);
-  let d = nextOccurrence(item, today);
-  if (d && atTime(d, item.time).getTime() <= now.getTime()) d = nextOccurrence(item, addDays(d, 1));
-  return d ?? item.date;
-}
 
 function nextMinute(now = Date.now()) {
   return new Date(now + 60000 - (now % 60000));
@@ -77,15 +65,19 @@ function cleanLines(lines: Line[]): Line[] {
   return out.filter((l) => l.type === 'text' || l.text !== '');
 }
 
-function windowValue(item: Item): string {
+function windowValue(item: Item, day: string): string {
   if (windowIsOff(item)) return 'Off';
-  if (item.repeat === 'once') {
-    return fmtRange(addDays(item.date, -fromDays(item, item.date)), untilDay(item, item.date));
-  }
+  if (item.repeat === 'once') return fmtRange(addDays(day, -fromDays(item, day)), untilDay(item, day));
   const parts: string[] = [];
   if (item.from.kind !== 'none') parts.push(fromLabel(item.from));
   if (item.until.kind !== 'event') parts.push(untilLabel(item.until));
   return parts.join(' – ');
+}
+
+/** "Today, Sun 22 Nov" · "Tomorrow, Mon 23 Nov" · "Wed 25 Nov" */
+function dayValue(day: string): string {
+  const rel = fmtDay(day);
+  return rel === 'Today' || rel === 'Tomorrow' ? `${rel}, ${fmtDate(day)}` : rel;
 }
 
 export default function EditScreen() {
@@ -105,7 +97,9 @@ export default function EditScreen() {
   const [kindMenu, setKindMenu] = useState(false);
   const [trying, setTrying] = useState(false);
   const [, setSoundsReady] = useState(0);
+  const dateAnchor = useAnchor<'date'>();
   const isNew = !existing;
+  const accent = accentFor(draft.kind);
 
   useEffect(() => {
     loadSounds().then(() => setSoundsReady((n) => n + 1));
@@ -118,32 +112,29 @@ export default function EditScreen() {
   };
 
   const now = new Date();
-  const day = displayDay(draft, now);
+  // Any time can be chosen: if it has already passed today, it rings tomorrow.
+  const day = effectiveDay(draft, now);
   const alarmAt = atTime(day, draft.time);
   const minAt = nextMinute();
   const rings = ringsLikeAlarm(draft);
+  const today = todayYmd(now);
+  const firstDay = atTime(today, draft.time).getTime() > now.getTime() ? today : addDays(today, 1);
 
-  /** Move the alarm to a new moment; repeating series shift by the same number of days. */
+  /** The slider moves the alarm to a moment; repeating series shift by the same number of days. */
   const setMoment = (d: Date) => {
     const at = d.getTime() < minAt.getTime() ? minAt : d;
-    const newDay = ymd(at);
-    const delta = diffDays(day, newDay);
+    if (draft.repeat === 'once') {
+      patch({ date: ymd(at), time: minutesOf(at) });
+      return;
+    }
+    const delta = diffDays(day, ymd(at));
     patch({ date: addDays(draft.date, delta), time: minutesOf(at) });
   };
 
-  const nudge = (min: number) => {
-    bump();
-    setMoment(new Date(alarmAt.getTime() + min * 60000));
-  };
-
   const pickDate = (d: string) => {
-    let time = draft.time;
-    if (atTime(d, time).getTime() < minAt.getTime()) {
-      const m = minutesOf(minAt);
-      time = Math.ceil(m / 5) * 5;
-    }
-    const delta = diffDays(day, d);
-    patch({ date: addDays(draft.date, delta), time });
+    const endRepeat = draft.endRepeat && draft.endRepeat < d ? null : draft.endRepeat;
+    patch({ date: d, endRepeat });
+    setTimeout(dateAnchor.close, 160);
   };
 
   const setGap = (g: number) => {
@@ -162,9 +153,11 @@ export default function EditScreen() {
   const save = () => {
     let item: Item = { ...draft, name: draft.name.trim(), lines: cleanLines(draft.lines), enabled: true };
     if (item.repeat !== 'once' && item.until.kind === 'date') item = { ...item, until: { kind: 'event' } };
+    if (item.repeat === 'once') item = { ...item, date: effectiveDay(item) };
     item = rollForwardIfPast(item);
     const prev = existing;
     upsert(item);
+    updateShownTasks(item);
     success();
     // First save is the natural moment to ask for notifications (needed for the ringing screen).
     if (hasEngine) requestNotifications().catch(() => {});
@@ -194,12 +187,7 @@ export default function EditScreen() {
   };
 
   const title = `${isNew ? 'New' : 'Edit'} ${draft.kind}`;
-  const part = partOfDay(draft.time);
   const hint = !sliderHint.alarm || !sliderHint.pre;
-  const dateValue = useMemo(() => {
-    const rel = fmtDay(day);
-    return rel === 'Today' || rel === 'Tomorrow' ? `${rel}, ${fmtDayLong(day)}` : rel;
-  }, [day]);
 
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
@@ -214,11 +202,14 @@ export default function EditScreen() {
           style={s.titleBtn}
           accessibilityRole="button"
           accessibilityLabel={`${title}. Change type`}>
+          {draft.kind === 'reminder' ? <Icon name="bell-outline" size={18} c={color.blue} style={s.titleIcon} /> : null}
           <T v="headline">{title}</T>
           <Icon name="menu-down" size={22} c={color.ink} />
         </Pressable>
         <Pressable onPress={save} hitSlop={12} accessibilityRole="button" style={s.saveBtn}>
-          <T v="headline">Save</T>
+          <T v="headline" c={draft.kind === 'reminder' ? color.blue : color.ink}>
+            Save
+          </T>
         </Pressable>
       </View>
 
@@ -228,32 +219,27 @@ export default function EditScreen() {
           contentContainerStyle={{ paddingBottom: insets.bottom + 48 }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          {/* Time */}
-          <View style={s.timeRow}>
-            <Pressable onPress={() => nudge(-1)} hitSlop={12} style={s.nudge} accessibilityLabel="One minute earlier">
-              <Icon name="chevron-left" size={30} c={color.ink3} />
-            </Pressable>
-            <View
-              style={s.timeCenter}
-              accessibilityLabel={`${fmtClock(draft.time)} ${amPm(draft.time)}, ${PART_NAME[part]}`}>
-              <T v="display" c={color.ink} tabular>
-                {fmtClock(draft.time)}
-              </T>
-              <View style={s.ampmCol}>
-                <T v="headline" c={color.ink}>
-                  {amPm(draft.time)}
-                </T>
-                <PartIcon minutes={draft.time} size={24} />
-              </View>
-            </View>
-            <Pressable onPress={() => nudge(1)} hitSlop={12} style={s.nudge} accessibilityLabel="One minute later">
-              <Icon name="chevron-right" size={30} c={color.ink3} />
-            </Pressable>
+          <View style={s.timeWrap}>
+            <TimeWheel
+              minutes={draft.time}
+              onChange={(update) => setDraft((d) => ({ ...d, time: update(d.time) }))}
+              band={accent.soft}
+            />
           </View>
 
-          <Row label="Date" value={dateValue} open={open === 'date'} onPress={() => toggle('date')}>
-            <Calendar value={day} min={todayYmd()} onChange={pickDate} />
-          </Row>
+          <Row
+            label="Date"
+            value={dayValue(day)}
+            popup
+            rowRef={dateAnchor.ref('date')}
+            onPress={() => {
+              tick();
+              dateAnchor.show('date');
+            }}
+          />
+          <Popover anchor={dateAnchor.rectFor('date')} onClose={dateAnchor.close} estimate={360}>
+            <Calendar value={day} min={firstDay} onChange={pickDate} accent={accent} />
+          </Popover>
 
           <View style={s.slider}>
             <TimelineSlider
@@ -267,15 +253,24 @@ export default function EditScreen() {
               onPins={(pins) => patch({ pins })}
               showHint={hint}
               onUsed={markSliderUsed}
+              accent={accent.main}
             />
           </View>
 
           {draft.lead > 0 ? (
             <Row label="Gap" value={fmtMinutes(draft.gap)} open={open === 'gap'} onPress={() => toggle('gap')}>
-              <NumberWheel values={GAPS} value={draft.gap} onChange={setGap} />
-              <T v="foot" c={color.ink2} style={s.centerText}>
-                minutes between pre-alarms
-              </T>
+              <WheelGroup>
+                <Wheel
+                  values={GAPS}
+                  value={GAPS.includes(draft.gap) ? draft.gap : 15}
+                  onChange={setGap}
+                  onConfirm={() => setOpen(null)}
+                  width={72}
+                  align="right"
+                  label="Gap"
+                />
+                <WheelLabel text="min apart" width={110} />
+              </WheelGroup>
             </Row>
           ) : (
             <Divider />
@@ -292,46 +287,28 @@ export default function EditScreen() {
               returnKeyType="next"
               maxLength={80}
             />
-            <Checklist lines={draft.lines} onChange={(lines) => patch({ lines })} />
+            <Checklist lines={draft.lines} onChange={(lines) => patch({ lines })} accent={accent} />
           </View>
           <Divider />
-          <View style={s.inline}>
-            <T v="body" style={s.inlineLabel}>
-              Tag
-            </T>
-            <View style={s.flex}>
-              <TagPicker value={draft.tagId} onChange={(tagId) => patch({ tagId })} />
-            </View>
+          <View style={s.tags}>
+            <TagPicker value={draft.tagId} onChange={(tagId) => patch({ tagId })} accent={accent} />
           </View>
           <Divider />
-          <View style={s.inline}>
-            <T v="body" style={s.inlineLabel}>
-              Energy
-            </T>
-            <EnergyPicker value={draft.energy} onChange={(energy) => patch({ energy })} />
+          <View style={s.energy}>
+            <EnergyPicker value={draft.energy} onChange={(energy) => patch({ energy })} accent={accent} />
           </View>
           <View style={s.gapBlock} />
 
           {/* When it repeats */}
-          <Row label="Repeat" value={repeatLabel(draft)} open={open === 'repeat'} onPress={() => toggle('repeat')}>
-            <RepeatPanel item={draft} onChange={patch} />
-          </Row>
-          {draft.repeat !== 'once' ? (
-            <Row
-              label="End repeat"
-              value={draft.endRepeat ? fmtDay(draft.endRepeat) : 'Never'}
-              open={open === 'end'}
-              onPress={() => toggle('end')}>
-              <EndRepeatPanel item={draft} onChange={patch} />
-            </Row>
-          ) : null}
+          <RepeatRow item={draft} onChange={patch} accent={accent} />
+          {draft.repeat !== 'once' ? <EndRepeatRow item={draft} onChange={patch} accent={accent} /> : null}
           <Row
             label="Remind every day"
-            value={windowValue(draft)}
+            value={windowValue(draft, day)}
             open={open === 'window'}
             onPress={() => toggle('window')}
             last={draft.kind === 'alarm'}>
-            <WindowPanel item={draft} onChange={patch} />
+            <WindowPanel item={draft} onChange={patch} accent={accent} />
           </Row>
           {draft.kind === 'reminder' ? (
             <Pressable
@@ -344,6 +321,7 @@ export default function EditScreen() {
               accessibilityState={{ checked: draft.ringLikeAlarm }}>
               <Checkbox
                 checked={draft.ringLikeAlarm}
+                accent={accent}
                 onPress={() => {
                   tick();
                   patch({ ringLikeAlarm: !draft.ringLikeAlarm });
@@ -368,6 +346,7 @@ export default function EditScreen() {
                   mission={draft.mission}
                   onChange={(mission) => patch({ mission })}
                   onTry={() => setTrying(true)}
+                  accent={accent}
                 />
               </Row>
               <Row
@@ -375,7 +354,11 @@ export default function EditScreen() {
                 value={snoozeLabel(draft.snooze)}
                 open={open === 'snooze'}
                 onPress={() => toggle('snooze')}>
-                <SnoozePanel snooze={draft.snooze} onChange={(snooze) => patch({ snooze })} />
+                <SnoozePanel
+                  snooze={draft.snooze}
+                  onChange={(snooze) => patch({ snooze })}
+                  onClose={() => setOpen(null)}
+                />
               </Row>
               <Row
                 label="Sound"
@@ -383,7 +366,12 @@ export default function EditScreen() {
                 open={open === 'sound'}
                 onPress={() => toggle('sound')}
                 last>
-                <SoundPanel sound={draft.sound} onChange={(sound) => patch({ sound })} />
+                <SoundPanel
+                  sound={draft.sound}
+                  onChange={(sound) => patch({ sound })}
+                  title={soundTitle}
+                  accent={accent}
+                />
               </Row>
             </>
           ) : null}
@@ -401,7 +389,11 @@ export default function EditScreen() {
           <View style={[s.menu, { marginTop: insets.top + 52 }]}>
             {(['alarm', 'reminder'] as Kind[]).map((k) => (
               <Pressable key={k} style={s.menuItem} onPress={() => setKind(k)} accessibilityRole="button">
-                <Icon name={k === 'alarm' ? 'alarm' : 'bell-outline'} size={22} c={color.ink} />
+                <Icon
+                  name={k === 'alarm' ? 'alarm' : 'bell-outline'}
+                  size={22}
+                  c={k === 'alarm' ? color.ink : color.blue}
+                />
                 <View style={s.flex}>
                   <T v="body">{k === 'alarm' ? 'Alarm' : 'Reminder'}</T>
                   <T v="foot" c={color.ink2}>
@@ -416,7 +408,12 @@ export default function EditScreen() {
       </Modal>
 
       <Modal visible={trying} animationType="slide" onRequestClose={() => setTrying(false)}>
-        <View style={[s.tryRoot, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 12 }]}>
+        <View
+          style={[
+            s.tryRoot,
+            { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 12 },
+            draft.kind === 'reminder' && s.tryReminder,
+          ]}>
           <View style={s.tryHead}>
             <T v="headline" c={color.white}>
               Practice
@@ -428,6 +425,7 @@ export default function EditScreen() {
           {trying ? (
             <MissionRunner
               mission={draft.mission}
+              accent={draft.kind === 'reminder' ? color.white : color.yellow}
               onInteract={() => {}}
               onDone={() => {
                 success();
@@ -441,13 +439,6 @@ export default function EditScreen() {
   );
 }
 
-function fmtDayLong(day: string) {
-  const d = new Date(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10)));
-  return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${d.getDate()} ${
-    ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()]
-  }`;
-}
-
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: color.bg },
   flex: { flex: 1 },
@@ -459,20 +450,10 @@ const s = StyleSheet.create({
     justifyContent: 'space-between',
   },
   titleBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 6 },
+  titleIcon: { marginRight: 6 },
   saveBtn: { paddingLeft: 8 },
-  timeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 8,
-    paddingTop: 4,
-    paddingBottom: 6,
-  },
-  nudge: { width: 48, height: 64, alignItems: 'center', justifyContent: 'center' },
-  timeCenter: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  ampmCol: { alignItems: 'center', gap: 4, paddingTop: 6 },
+  timeWrap: { paddingTop: 4, paddingBottom: 10 },
   slider: { paddingTop: 10 },
-  centerText: { textAlign: 'center', marginTop: 2 },
   block: { paddingHorizontal: SIDE, paddingTop: 10, paddingBottom: 6 },
   name: {
     fontFamily: font.semibold,
@@ -481,8 +462,8 @@ const s = StyleSheet.create({
     color: color.ink,
     paddingVertical: 8,
   },
-  inline: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SIDE, paddingVertical: 12 },
-  inlineLabel: { width: 72 },
+  tags: { paddingVertical: 12 },
+  energy: { paddingHorizontal: SIDE, paddingVertical: 12 },
   gapBlock: { height: 18, backgroundColor: color.fill, marginTop: 0 },
   checkRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SIDE, minHeight: 52, gap: 12 },
   checkLabel: { flex: 1 },
@@ -501,5 +482,6 @@ const s = StyleSheet.create({
   },
   menuItem: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 16, paddingVertical: 12 },
   tryRoot: { flex: 1, backgroundColor: color.navy, paddingHorizontal: SIDE },
+  tryReminder: { backgroundColor: color.blueNight },
   tryHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 8 },
 });

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Expanded reminder: title, due line and the task checklist -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content"
+  android:orientation="vertical">
+
+  <TextView
+    android:id="@+id/celestial_title"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:ellipsize="end"
+    android:maxLines="2"
+    android:textAppearance="@android:style/TextAppearance.Material.Notification.Title" />
+
+  <TextView
+    android:id="@+id/celestial_due"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:ellipsize="end"
+    android:maxLines="1"
+    android:textAppearance="@android:style/TextAppearance.Material.Notification" />
+
+  <LinearLayout
+    android:id="@+id/celestial_tasks"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingTop="4dp" />
+
+  <TextView
+    android:id="@+id/celestial_more"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingTop="2dp"
+    android:textAppearance="@android:style/TextAppearance.Material.Notification"
+    android:visibility="gone" />
+</LinearLayout>

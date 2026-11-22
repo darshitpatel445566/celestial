@@ -2,7 +2,7 @@ import type { NativeTrigger } from '../../modules/celestial-alarm';
 import { addDays, addMonths, atTime, diffDays, today as todayYmd, wallClock } from './dates';
 import { fmtDate, fmtLeft, fmtTime } from './format';
 import { nextOccurrence, occurrencesBetween, previousOccurrence } from './repeat';
-import type { Item, Unit } from './types';
+import type { Item, Line, Unit } from './types';
 
 /** How far ahead the phone keeps exact triggers. Every app open refreshes it. */
 export const HORIZON_DAYS = 21;
@@ -94,8 +94,22 @@ export function ringsLikeAlarm(item: Pick<Item, 'kind' | 'ringLikeAlarm'>): bool
   return item.kind === 'alarm' || item.ringLikeAlarm;
 }
 
-export function taskCount(item: Pick<Item, 'lines'>): { done: number; total: number } {
-  const tasks = item.lines.filter((l) => l.type === 'task' && l.text.trim().length > 0);
+/**
+ * The tasks as they stand for one occurrence. Repeating items start every occurrence fresh:
+ * ticks saved for an older occurrence count as not done.
+ */
+export function tasksOf(item: Pick<Item, 'lines' | 'repeat' | 'tasksFor'>, occurrence?: string | null): Line[] {
+  const fresh = item.repeat !== 'once' && !!occurrence && item.tasksFor !== occurrence;
+  return item.lines
+    .filter((l) => l.type === 'task' && l.text.trim().length > 0)
+    .map((l) => (fresh ? { ...l, done: false } : l));
+}
+
+export function taskCount(
+  item: Pick<Item, 'lines' | 'repeat' | 'tasksFor'>,
+  occurrence?: string | null,
+): { done: number; total: number } {
+  const tasks = tasksOf(item, occurrence);
   return { done: tasks.filter((t) => t.done).length, total: tasks.length };
 }
 
@@ -121,6 +135,21 @@ function bodyFor(item: Item, p: Planned, now: Date): string {
   return `Was due ${fmtDate(p.occurrence, now)}${p.last ? ' · Last reminder' : ''}`;
 }
 
+/** "Due Tue 15 Dec · 9:00 AM" style line for reminder notifications. */
+function dueFor(item: Item, p: Planned, now: Date): string {
+  const time = fmtTime(item.time);
+  if (p.phase === 'before') {
+    const days = diffDays(wallClock(p.at).slice(0, 10), p.occurrence);
+    return `Due ${fmtDate(p.occurrence, now)} · ${time} · in ${days} ${days === 1 ? 'day' : 'days'}`;
+  }
+  if (p.phase === 'after') return `Was due ${fmtDate(p.occurrence, now)} · ${time}${p.last ? ' · Last reminder' : ''}`;
+  if (p.kind === 'pre') {
+    const main = atTime(p.occurrence, item.time);
+    return `Due at ${time} · in ${fmtLeft(main.getTime() - p.at.getTime())}`;
+  }
+  return `Due now · ${time}`;
+}
+
 const PRIORITY: Record<Planned['kind'], number> = { main: 3, window: 2, pre: 1 };
 
 function toNative(item: Item, p: Planned, now: Date): NativeTrigger {
@@ -144,6 +173,11 @@ function toNative(item: Item, p: Planned, now: Date): NativeTrigger {
     snoozeLimit: item.snooze.times,
     occurrence: p.occurrence,
     last: p.last,
+    itemKind: item.kind,
+    tasks: tasksOf(item, p.occurrence).map((l) => ({ id: l.id, text: l.text, done: l.done, level: l.level })),
+    due: dueFor(item, p, now),
+    overdue: p.phase === 'after',
+    canDone: tracksDone(item),
   };
 }
 
@@ -275,6 +309,22 @@ export function listEntries(items: Item[], now: Date = new Date()): ListEntry[] 
     if (ta !== tb) return ta - tb;
     return a.item.time - b.item.time;
   });
+}
+
+/**
+ * The day it actually rings next. One-time: the chosen day, or tomorrow if that time has already
+ * passed today. Repeating: the next matching day.
+ */
+export function effectiveDay(item: Item, now: Date = new Date()): string {
+  const today = todayYmd(now);
+  if (item.repeat === 'once') {
+    let d = item.date < today ? today : item.date;
+    if (atTime(d, item.time).getTime() <= now.getTime()) d = addDays(d, 1);
+    return d;
+  }
+  let d = nextOccurrence(item, today);
+  if (d && atTime(d, item.time).getTime() <= now.getTime()) d = nextOccurrence(item, addDays(d, 1));
+  return d ?? item.date;
 }
 
 /** When an item is switched back on (or saved) with a past one-time date, move it to the next time that fits. */

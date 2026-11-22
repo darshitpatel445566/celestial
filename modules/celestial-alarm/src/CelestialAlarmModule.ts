@@ -20,6 +20,10 @@ declare class CelestialAlarmNative extends NativeModule<CelestialAlarmModuleEven
   getMissed(): string;
   clearMissed(): boolean;
   testRing(json: string, seconds: number): boolean;
+  takePendingActions(): string;
+  updateShownTasks(alarmId: string, tasksJson: string): boolean;
+  dismissReminder(alarmId: string): boolean;
+  haptic(kind: 'success' | 'wrong' | 'tick'): boolean;
 }
 
 // Optional so the app still opens where the module is missing (web preview, iPhone later).
